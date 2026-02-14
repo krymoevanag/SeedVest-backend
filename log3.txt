@@ -1,0 +1,17 @@
+Creating test database for alias 'default'...
+.F......
+======================================================================
+FAIL: test_admin_can_approve_user (accounts.tests.ApprovalTests.test_admin_can_approve_user)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\projects\seedvest\seedvest-backend\accounts\tests.py", line 82, in test_admin_can_approve_user
+    self.assertIsNotNone(self.pending_user.membership_number)
+AssertionError: unexpectedly None
+
+----------------------------------------------------------------------
+Ran 8 tests in 21.415s
+
+FAILED (failures=1)
+Destroying test database for alias 'default'...
+Found 8 test(s).
+System check identified no issues (0 silenced).

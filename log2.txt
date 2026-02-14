@@ -1,0 +1,17 @@
+Creating test database for alias 'default'...
+.F......
+======================================================================
+FAIL: test_admin_can_approve_user (accounts.tests.ApprovalTests.test_admin_can_approve_user)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\projects\seedvest\seedvest-backend\accounts\tests.py", line 78, in test_admin_can_approve_user
+    self.assertEqual(response.status_code, status.HTTP_200_OK)
+AssertionError: 400 != 200
+
+----------------------------------------------------------------------
+Ran 8 tests in 19.840s
+
+FAILED (failures=1)
+Destroying test database for alias 'default'...
+Found 8 test(s).
+System check identified no issues (0 silenced).

@@ -1,0 +1,45 @@
+Creating test database for alias 'default'...
+EE.F....
+======================================================================
+ERROR: test_membership_activation (accounts.tests.ActivationTests.test_membership_activation)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\projects\seedvest\seedvest-backend\accounts\tests.py", line 108, in test_membership_activation
+    url = reverse("activate-membership", args=[self.user.id])
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\projects\seedvest\seedvest-backend\venv\Lib\site-packages\django\urls\base.py", line 98, in reverse
+    resolved_url = resolver._reverse_with_prefix(view, prefix, *args, **kwargs)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\projects\seedvest\seedvest-backend\venv\Lib\site-packages\django\urls\resolvers.py", line 831, in _reverse_with_prefix
+    raise NoReverseMatch(msg)
+django.urls.exceptions.NoReverseMatch: Reverse for 'activate-membership' not found. 'activate-membership' is not a valid view function or pattern name.
+
+======================================================================
+ERROR: test_admin_can_approve_user (accounts.tests.ApprovalTests.test_admin_can_approve_user)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\projects\seedvest\seedvest-backend\accounts\tests.py", line 73, in test_admin_can_approve_user
+    url = reverse("approve-user", args=[self.pending_user.id])
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\projects\seedvest\seedvest-backend\venv\Lib\site-packages\django\urls\base.py", line 98, in reverse
+    resolved_url = resolver._reverse_with_prefix(view, prefix, *args, **kwargs)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\projects\seedvest\seedvest-backend\venv\Lib\site-packages\django\urls\resolvers.py", line 831, in _reverse_with_prefix
+    raise NoReverseMatch(msg)
+django.urls.exceptions.NoReverseMatch: Reverse for 'approve-user' not found. 'approve-user' is not a valid view function or pattern name.
+
+======================================================================
+FAIL: test_user_can_logout (accounts.tests.LogoutTests.test_user_can_logout)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\projects\seedvest\seedvest-backend\accounts\tests.py", line 215, in test_user_can_logout
+    self.assertEqual(response.status_code, status.HTTP_205_RESET_CONTENT)
+AssertionError: 200 != 205
+
+----------------------------------------------------------------------
+Ran 8 tests in 30.884s
+
+FAILED (failures=1, errors=2)
+Destroying test database for alias 'default'...
+Found 8 test(s).
+System check identified no issues (0 silenced).
