@@ -1,8 +1,8 @@
 from pathlib import Path
 from datetime import timedelta
-from dotenv import load_dotenv
 import os
 
+from dotenv import load_dotenv
 # =========================
 # Base directory & ENV load
 # =========================
@@ -18,7 +18,12 @@ load_dotenv(BASE_DIR / ".env")
 SECRET_KEY = os.getenv("SECRET_KEY")
 DEBUG = os.getenv("DEBUG", "True") == "True"
 
-ALLOWED_HOSTS = [".ngrok-free.dev", "localhost", "127.0.0.1"]
+ALLOWED_HOSTS = [
+    ".ngrok-free.dev",
+    "127.0.0.1",
+    "localhost",
+    "192.168.100.60",
+]
 
 
 # =========================
@@ -32,12 +37,10 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-
     # Third-party
     "rest_framework",
     "rest_framework_simplejwt",
     "rest_framework_simplejwt.token_blacklist",
-
     # Local apps
     "accounts",
     "groups",
@@ -91,7 +94,8 @@ REST_FRAMEWORK = {
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],
+        "DIRS": [BASE_DIR / 'templates'
+            ],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -128,12 +132,18 @@ AUTH_PASSWORD_VALIDATORS = [
     },
     {
         "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
+        "OPTIONS": {
+            "min_length": 8,
+        }
     },
     {
         "NAME": "django.contrib.auth.password_validation.CommonPasswordValidator",
     },
     {
         "NAME": "django.contrib.auth.password_validation.NumericPasswordValidator",
+    },
+    {
+        "NAME": "accounts.validators.ComplexityValidator",
     },
 ]
 
@@ -177,12 +187,13 @@ EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER")
 EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD")
 
 DEFAULT_FROM_EMAIL = "SeedVest <seedvest.app@gmail.com>"
+print("EMAIL_HOST:", os.getenv("EMAIL_HOST"))
 
 AUTHENTICATION_BACKENDS = [
     "accounts.auth_backends.EmailBackend",
     "django.contrib.auth.backends.ModelBackend",
 ]
-
+PASSWORD_RESET_TIMEOUT = 1800  # 30 minutes
 
 # =========================
 # M-Pesa ENV configuration
@@ -193,3 +204,5 @@ MPESA_CONSUMER_SECRET = os.getenv("MPESA_CONSUMER_SECRET")
 MPESA_SHORTCODE = os.getenv("MPESA_SHORTCODE")
 MPESA_PASSKEY = os.getenv("MPESA_PASSKEY")
 MPESA_CALLBACK_URL = os.getenv("MPESA_CALLBACK_URL")
+
+FRONTEND_URL = os.getenv("FRONTEND_URL", "seedvest://")

@@ -1,27 +1,39 @@
+# ====================================================
+# DJANGO IMPORTS
+# ====================================================
+from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
+from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
+from django.core.exceptions import ValidationError
+from django.core.mail import EmailMultiAlternatives
+from django.db.models import Sum
+from django.shortcuts import render
+from django.template.loader import render_to_string
 from django.utils.encoding import force_bytes, force_str
-from django.utils.http import (
-    urlsafe_base64_encode,
-    urlsafe_base64_decode,
-)
+from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
 
+# ====================================================
+# DJANGO REST FRAMEWORK IMPORTS
+# ====================================================
 from rest_framework import generics, status, viewsets
 from rest_framework.decorators import action
-from rest_framework.permissions import (
-    AllowAny,
-    IsAuthenticated,
-    BasePermission,
-)
+from rest_framework.generics import ListAPIView
+from rest_framework.permissions import AllowAny, BasePermission, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework.generics import ListAPIView
 
+# ====================================================
+# JWT IMPORTS
+# ====================================================
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework_simplejwt.tokens import RefreshToken
 
+# ====================================================
+# LOCAL IMPORTS
+# ====================================================
+from finance.models import Contribution
 from .emails import (
-    send_password_reset_email,
     send_membership_rejected_email,
     send_role_updated_email,
 )
@@ -35,7 +47,12 @@ from .serializers import (
 )
 from .tokens import account_activation_token
 
+
+# ====================================================
+# GLOBALS
+# ====================================================
 User = get_user_model()
+token_generator = PasswordResetTokenGenerator()
 
 
 # ====================================================
@@ -77,7 +94,7 @@ class LoginView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        if not user.is_approved:
+        if not getattr(user, "is_approved", False):
             return Response(
                 {"error": "Account pending approval"},
                 status=status.HTTP_403_FORBIDDEN,
@@ -90,6 +107,7 @@ class LoginView(APIView):
                 "access": str(refresh.access_token),
                 "refresh": str(refresh),
                 "role": user.role,
+                "expires_in": 3600,
                 "user_id": user.id,
                 "full_name": f"{user.first_name} {user.last_name}",
             },
@@ -165,16 +183,14 @@ class UserViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def reject(self, request, pk=None):
         user = self.get_object()
-        reason = request.data.get("reason", "Application does not meet current criteria.")
+        reason = request.data.get(
+            "reason", "Application does not meet current criteria."
+        )
 
         send_membership_rejected_email(user, reason)
 
-        # Optionally delete the user or mark as rejected?
-        # For now, we'll just deactivate them and maybe add a rejected flag if we had one.
-        # Or just leave them inactive.
-        # Let's just send the email and maybe deactivate to be sure.
         user.is_active = False
-        user.save()
+        user.save(update_fields=["is_active"])
 
         return Response(
             {"message": "User rejected and email sent."},
@@ -193,7 +209,7 @@ class UserViewSet(viewsets.ModelViewSet):
             )
 
         user.role = new_role
-        user.save()
+        user.save(update_fields=["role"])
 
         send_role_updated_email(user, new_role)
 
@@ -202,27 +218,25 @@ class UserViewSet(viewsets.ModelViewSet):
             status=status.HTTP_200_OK,
         )
 
-    @action(detail=False, methods=["get", "patch", "put"], permission_classes=[IsAuthenticated])
+    @action(detail=False, methods=["get", "patch", "put"])
     def me(self, request):
         user = request.user
-        
+
         if request.method == "GET":
             serializer = UserProfileSerializer(user)
             return Response(serializer.data)
-        
-        elif request.method in ["PATCH", "PUT"]:
-            serializer = UserProfileSerializer(
-                user,
-                data=request.data,
-                partial=True,
-            )
-            if serializer.is_valid():
-                serializer.save()
-                return Response(serializer.data)
-            return Response(
-                serializer.errors,
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+
+        serializer = UserProfileSerializer(
+            user,
+            data=request.data,
+            partial=True,
+        )
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 # ====================================================
@@ -244,44 +258,92 @@ class PasswordResetRequestView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        serializer = PasswordResetRequestSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        user_email = request.data.get("email")
 
-        email = serializer.validated_data["email"].strip()
-        user = User.objects.filter(email__iexact=email).first()
+        try:
+            user = User.objects.get(email=user_email)
+        except User.DoesNotExist:
+            return Response(
+                {"detail": "If an account exists, a reset email has been sent."},
+                status=status.HTTP_200_OK,
+            )
 
-        if user:
-            uid = urlsafe_base64_encode(force_bytes(user.pk))
-            token = PasswordResetTokenGenerator().make_token(user)
-            reset_link = f"http://localhost:3000/reset-password/{uid}/{token}/"
-            send_password_reset_email(email, reset_link)
+        uid = urlsafe_base64_encode(force_bytes(user.pk))
+        token = token_generator.make_token(user)
+
+        reset_link = f"{settings.FRONTEND_URL}/reset-password/{uid}/{token}/"
+
+        print("Password reset requested for:", user_email)
+        print("Generated link:", reset_link)
+
+        html_content = render_to_string(
+            "emails/password_reset.html",
+            {"reset_link": reset_link},
+        )
+
+        email_message = EmailMultiAlternatives(
+            subject="Reset Your SeedVest Password",
+            body=f"Use this link to reset your password: {reset_link}",
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            to=[user.email],
+        )
+
+        email_message.attach_alternative(html_content, "text/html")
+
+        print("Sending email...")
+        email_message.send(fail_silently=False)
+        print("Email sent successfully.")
 
         return Response(
-            {
-                "message": (
-                    "If an account with that email exists, "
-                    "a reset link has been sent."
-                )
-            },
+            {"detail": "If an account exists, a reset email has been sent."},
             status=status.HTTP_200_OK,
         )
+
+
+def password_reset_page(request, uid, token):
+    return render(
+        request,
+        "reset_password_page.html",
+        {"uid": uid, "token": token},
+    )
 
 
 class PasswordResetConfirmView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        serializer = PasswordResetConfirmSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        uid = request.data.get("uid")
+        token = request.data.get("token")
+        new_password = request.data.get("new_password")
 
-        user = serializer.validated_data["user"]
-        new_password = serializer.validated_data["new_password"]
+        try:
+            user_id = force_str(urlsafe_base64_decode(uid))
+            user = User.objects.get(pk=user_id)
+        except Exception:
+            return Response(
+                {"detail": "Invalid reset link."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not token_generator.check_token(user, token):
+            return Response(
+                {"detail": "Token expired or invalid."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            validate_password(new_password, user)
+        except ValidationError as e:
+            return Response(
+                {"detail": e.messages},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         user.set_password(new_password)
-        user.save()
+        user.save(update_fields=["password"])
 
         return Response(
-            {"message": "Password has been reset successfully."},
+            {"detail": "Password reset successful."},
             status=status.HTTP_200_OK,
         )
 
@@ -334,9 +396,6 @@ class LogoutView(APIView):
 # ====================================================
 # ADMIN DASHBOARD STATS
 # ====================================================
-from django.db.models import Sum
-from finance.models import Contribution
-
 class AdminStatsView(APIView):
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated, IsAdminOrTreasurer]
@@ -344,17 +403,21 @@ class AdminStatsView(APIView):
     def get(self, request):
         total_users = User.objects.count()
         pending_approvals = User.objects.filter(is_approved=False).count()
-        
-        total_contributions = Contribution.objects.filter(status='PAID').aggregate(
-            total=Sum('amount')
-        )['total'] or 0.00
-        
-        # Pending contributions count
-        pending_contributions = Contribution.objects.filter(status='PENDING').count()
 
-        return Response({
-            "total_users": total_users,
-            "pending_approvals": pending_approvals,
-            "total_contributions": total_contributions,
-            "pending_contributions_count": pending_contributions,
-        })
+        total_contributions = (
+            Contribution.objects.filter(status="PAID").aggregate(total=Sum("amount"))[
+                "total"
+            ]
+            or 0.00
+        )
+
+        pending_contributions = Contribution.objects.filter(status="PENDING").count()
+
+        return Response(
+            {
+                "total_users": total_users,
+                "pending_approvals": pending_approvals,
+                "total_contributions": total_contributions,
+                "pending_contributions_count": pending_contributions,
+            }
+        )

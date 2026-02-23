@@ -5,6 +5,7 @@ from rest_framework_simplejwt.views import (
     TokenObtainPairView,
     TokenRefreshView,
 )
+from accounts.views import password_reset_page
 
 def health_check(request):
     """Simple health check endpoint for connectivity testing"""
@@ -24,5 +25,7 @@ urlpatterns = [
     path("api/finance/", include("finance.urls")),
     path("api/notifications/", include("notifications.urls")),
     path("api/payments/", include("payments.urls")),
+    path(
+        "reset-password/<uid>/<token>/", password_reset_page, name="password_reset_page"
+    ),
 ]
-

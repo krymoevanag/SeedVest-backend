@@ -8,6 +8,7 @@ class User(AbstractUser):
     username = None  # ✅ fully removed
 
     email = models.EmailField(unique=True)
+    phone_number = models.CharField(max_length=20, blank=True, null=True)
 
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS = []
@@ -43,7 +44,7 @@ class User(AbstractUser):
                 type="SUCCESS",
                 link="/dashboard",
             )
-            
+
             # Send Email
             send_membership_approved_email(self)
 

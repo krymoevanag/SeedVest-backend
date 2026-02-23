@@ -1,4 +1,5 @@
-from django.contrib.auth import get_user_model
+from django.contrib.auth import get_user_model, authenticate
+from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.urls import reverse
 from django.utils.encoding import force_bytes, force_str
@@ -37,7 +38,14 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         if attrs["password"] != attrs["password2"]:
-            raise serializers.ValidationError("Passwords do not match.")
+            raise serializers.ValidationError({"password": "Passwords do not match."})
+        
+        # Enforce strong password validation
+        try:
+            validate_password(attrs["password"])
+        except Exception as e:
+            raise serializers.ValidationError({"password": list(e.messages)})
+            
         return attrs
 
     def create(self, validated_data):
@@ -126,13 +134,35 @@ class UserProfileSerializer(serializers.ModelSerializer):
 # ====================================================
 # PASSWORD RESET
 # ====================================================
+from django.conf import settings
+from django.core.mail import send_mail
+from django.contrib.auth.tokens import PasswordResetTokenGenerator
+
+
 class PasswordResetRequestSerializer(serializers.Serializer):
     email = serializers.EmailField()
 
     def validate_email(self, value):
-        if not User.objects.filter(email=value).exists():
-            raise serializers.ValidationError("No user found with this email.")
+        # IMPORTANT: Don't reveal whether email exists (security)
+        self.user = User.objects.filter(email=value).first()
         return value
+
+    def save(self):
+        if not self.user:
+            # Always return success silently
+            return
+
+        uid = urlsafe_base64_encode(force_bytes(self.user.pk))
+        token = PasswordResetTokenGenerator().make_token(self.user)
+
+        reset_link = f"{settings.FRONTEND_URL}/reset-password?uid={uid}&token={token}"
+
+        send_mail(
+            subject="Reset your password",
+            message=f"Click the link below to reset your password:\n\n{reset_link}",
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[self.user.email],
+        )
 
 
 class PasswordResetConfirmSerializer(serializers.Serializer):
@@ -157,12 +187,15 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
             raise serializers.ValidationError("Invalid reset link.")
 
         if not PasswordResetTokenGenerator().check_token(user, token):
-            raise serializers.ValidationError(
-                "Reset token is invalid or expired."
-            )
+            raise serializers.ValidationError("Reset token is invalid or expired.")
 
         attrs["user"] = user
         return attrs
+
+    def save(self):
+        user = self.validated_data["user"]
+        user.set_password(self.validated_data["new_password"])
+        user.save()
 
 
 # ====================================================
