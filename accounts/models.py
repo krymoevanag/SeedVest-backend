@@ -110,7 +110,9 @@ class AuditLog(models.Model):
     )
     target_user = models.ForeignKey(
         User,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name="audit_entries",
     )
     action = models.CharField(max_length=20, choices=ACTION_CHOICES)
@@ -121,8 +123,8 @@ class AuditLog(models.Model):
         ordering = ["-timestamp"]
         verbose_name = "Audit Log"
         verbose_name_plural = "Audit Logs"
-        # Removed invalid constraints completely
 
     def __str__(self):
         actor_name = self.actor.email if self.actor else "SYSTEM"
-        return f"{actor_name} -> {self.action} -> {self.target_user.email}"
+        target_name = self.target_user.email if self.target_user else "DELETED"
+        return f"{actor_name} -> {self.action} -> {target_name}"

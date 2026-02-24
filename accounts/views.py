@@ -325,17 +325,37 @@ class UserViewSet(viewsets.ModelViewSet):
         )
 
     def perform_destroy(self, instance):
-        # Log action before deletion
+        from django.db import transaction
         from .models import AuditLog
-        
+        from finance.models import Penalty
+        from groups.models import Group
+
         actor = self.request.user
-        AuditLog.objects.create(
-            actor=actor,
-            target_user=instance,
-            action="DEACTIVATION",
-            notes=f"Member account permanently deleted by admin ({actor.email}). Member: {instance.email}"
-        )
-        instance.delete()
+
+        # Create audit log BEFORE deletion (with target_user set to None after)
+        audit_notes = f"Member account permanently deleted by admin ({actor.email}). Member: {instance.email} (ID: {instance.id})"
+
+        with transaction.atomic():
+            # 1. Nullify penalties where this user was the applier
+            Penalty.objects.filter(applied_by=instance).update(applied_by=None)
+
+            # 2. Reassign groups where this user is treasurer (to the admin performing deletion)
+            Group.objects.filter(treasurer=instance).update(treasurer=actor)
+
+            # 3. Set audit log target_user to NULL for existing logs about this user
+            AuditLog.objects.filter(target_user=instance).update(target_user=None)
+
+            # 4. Create the deletion audit log (actor only, no target_user)
+            AuditLog.objects.create(
+                actor=actor,
+                target_user=None,
+                action="DEACTIVATION",
+                notes=audit_notes,
+            )
+
+            # 5. Now safe to delete — remaining FKs (contributions, notifications, memberships) are CASCADE
+            instance.delete()
+
 
     @action(detail=False, methods=["delete"], permission_classes=[IsAuthenticated])
     def delete_account(self, request):
