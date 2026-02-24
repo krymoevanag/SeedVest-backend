@@ -96,7 +96,8 @@ class LoginView(APIView):
             )
 
         if not user.is_superuser:
-            if not getattr(user, "is_approved", False) or user.application_status != "APPROVED":
+            # Allow login if already is_approved (backward compatibility) OR if application_status is APPROVED
+            if not user.is_approved and user.application_status != "APPROVED":
                 return Response(
                     {"error": f"Account status: {user.get_application_status_display()}. Please await admin approval."},
                     status=status.HTTP_403_FORBIDDEN,
