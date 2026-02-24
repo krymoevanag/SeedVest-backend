@@ -2,6 +2,7 @@ from django.contrib.auth.models import AbstractUser
 from django.db import models
 import uuid
 from .managers import UserManager
+from .validators import validate_profile_picture_size
 
 
 class User(AbstractUser):
@@ -36,6 +37,12 @@ class User(AbstractUser):
 
     membership_number = models.CharField(
         max_length=20, unique=True, blank=True, null=True
+    )
+    profile_picture = models.ImageField(
+        upload_to="profile_pics/",
+        null=True,
+        blank=True,
+        validators=[validate_profile_picture_size],
     )
 
     objects = UserManager()  # ✅ THIS IS THE KEY LINE

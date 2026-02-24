@@ -10,6 +10,8 @@ from django.utils.http import (
 
 from rest_framework import serializers
 
+from django.db import transaction
+from django.db.models import Sum
 from .emails import send_activation_email
 from .models import AuditLog
 from .tokens import account_activation_token
@@ -48,6 +50,7 @@ class RegisterSerializer(serializers.ModelSerializer):
             
         return attrs
 
+    @transaction.atomic
     def create(self, validated_data):
         validated_data.pop("password2")
 
@@ -105,7 +108,7 @@ class AdminUserRegistrationSerializer(serializers.ModelSerializer):
             first_name=validated_data["first_name"],
             last_name=validated_data["last_name"],
             phone_number=validated_data.get("phone_number", ""),
-            password=User.objects.make_random_password(), # Random password
+            password=User.objects.make_random_password() if hasattr(User.objects, 'make_random_password') else "TempPass123!", 
             role=validated_data.get("role", "MEMBER"),
             is_approved=True,
             is_active=True,
@@ -158,12 +161,17 @@ class MembershipActivationSerializer(serializers.Serializer):
 
 
 class UserProfileSerializer(serializers.ModelSerializer):
+    full_name = serializers.SerializerMethodField()
+    total_savings = serializers.SerializerMethodField()
+    total_penalties = serializers.SerializerMethodField()
+
     class Meta:
         model = User
         fields = (
             "id",
             "username",
             "email",
+            "full_name",
             "first_name",
             "last_name",
             "phone_number",
@@ -171,16 +179,58 @@ class UserProfileSerializer(serializers.ModelSerializer):
             "is_superuser",
             "membership_number",
             "is_approved",
+            "profile_picture",
+            "total_savings",
+            "total_penalties",
         )
         read_only_fields = (
             "id",
             "username",
             "email",
+            "full_name",
             "role",
             "is_superuser",
             "membership_number",
             "is_approved",
+            "total_savings",
+            "total_penalties",
         )
+
+    def get_full_name(self, obj):
+        return f"{obj.first_name} {obj.last_name}".strip() or obj.email
+
+    def get_total_savings(self, obj):
+        if hasattr(obj, 'annotated_savings'):
+            return obj.annotated_savings
+        
+        from finance.models import Contribution
+        return (
+            Contribution.objects.filter(user=obj, status__in=["PAID", "LATE"]).aggregate(
+                total=Sum("amount")
+            )["total"]
+            or 0.0
+        )
+
+    def get_total_penalties(self, obj):
+        if hasattr(obj, 'annotated_cont_penalties') and hasattr(obj, 'annotated_standalone_penalties'):
+            return float(obj.annotated_cont_penalties) + float(obj.annotated_standalone_penalties)
+
+        from finance.models import Contribution, Penalty
+        # Penalties paid via contributions
+        paid_penalties = (
+            Contribution.objects.filter(user=obj, status__in=["PAID", "LATE"]).aggregate(
+                total=Sum("penalty")
+            )["total"]
+            or 0.0
+        )
+        # Standalone penalties (all issued)
+        standalone_penalties = (
+            Penalty.objects.filter(user=obj, contribution__isnull=True).aggregate(
+                total=Sum("amount")
+            )["total"]
+            or 0.0
+        )
+        return float(paid_penalties) + float(standalone_penalties)
 
 
 # ====================================================

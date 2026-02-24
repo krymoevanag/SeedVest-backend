@@ -25,7 +25,15 @@ class ContributionSerializer(serializers.ModelSerializer):
 class PenaltySerializer(serializers.ModelSerializer):
     class Meta:
         model = Penalty
-        fields = "__all__"
+        fields = (
+            "id",
+            "user",
+            "contribution",
+            "amount",
+            "reason",
+            "applied_by",
+            "created_at",
+        )
         read_only_fields = ("created_at", "applied_by")
 
 

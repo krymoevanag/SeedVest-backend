@@ -27,3 +27,8 @@ class ComplexityValidator:
         return _(
             "Your password must contain at least one letter, one digit, and one special character."
         )
+
+def validate_profile_picture_size(value):
+    filesize = value.size
+    if filesize > 1024 * 1024:  # 1MB
+        raise ValidationError(_("Maximum file size is 1MB"))

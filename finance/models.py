@@ -20,10 +20,21 @@ User = settings.AUTH_USER_MODEL
 # Penalty Model
 # =========================
 class Penalty(models.Model):
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="penalties",
+        null=True,
+        blank=True,
+        help_text="The user being penalized"
+    )
     contribution = models.ForeignKey(
         "Contribution",
         on_delete=models.CASCADE,
         related_name="penalties",
+        null=True,
+        blank=True,
+        help_text="Optional link to a specific contribution"
     )
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     reason = models.CharField(max_length=255)
@@ -36,7 +47,7 @@ class Penalty(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"Penalty {self.amount} on {self.contribution}"
+        return f"Penalty {self.amount} on {self.contribution or self.user}"
 
 
 # =========================
@@ -341,4 +352,3 @@ class Investment(models.Model):
 
     def __str__(self):
         return f"{self.name} - {self.group} ({self.status})"
-

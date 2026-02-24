@@ -32,7 +32,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 # ====================================================
 # LOCAL IMPORTS
 # ====================================================
-from finance.models import Contribution
+from finance.models import Contribution, Penalty
 from .emails import (
     send_membership_rejected_email,
     send_role_updated_email,
@@ -168,14 +168,46 @@ class ActivateAccountView(APIView):
 class UserViewSet(viewsets.ModelViewSet):
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated, IsAdminOrTreasurer]
+    serializer_class = UserProfileSerializer # Base serializer for the ViewSet
 
     def get_queryset(self):
         """
-        Admins can see all users, Treasurers can see members and other Treasurers.
-        For role management, we often only care about APPROVED users.
+        Superusers and Admins can see all users.
+        Treasurers can see members and other Treasurers in their scope.
         """
+        from django.db.models import Sum, Q, Value, FloatField
+        from django.db.models.functions import Coalesce
+        from finance.models import Contribution, Penalty
+
+        user = self.request.user
         queryset = User.objects.all().order_by("-date_joined")
         
+        # Filtering for non-superusers/non-admins
+        if not user.is_superuser and user.role != "ADMIN":
+            if user.role == "TREASURER":
+                pass
+            else:
+                queryset = User.objects.filter(id=user.id)
+
+        # Annotate with totals to avoid N+1 in serializer
+        queryset = queryset.annotate(
+            annotated_savings=Coalesce(
+                Sum('finance_contributions__amount', filter=Q(finance_contributions__status__in=["PAID", "LATE"])),
+                Value(0.0),
+                output_field=FloatField()
+            ),
+            annotated_cont_penalties=Coalesce(
+                Sum('finance_contributions__penalty', filter=Q(finance_contributions__status__in=["PAID", "LATE"])),
+                Value(0.0),
+                output_field=FloatField()
+            ),
+            annotated_standalone_penalties=Coalesce(
+                Sum('penalties__amount', filter=Q(penalties__contribution__isnull=True)),
+                Value(0.0),
+                output_field=FloatField()
+            )
+        )
+
         # If accessing the list (e.g., for role management), filter by approval if requested
         if self.action == 'list' and self.request.query_params.get('approved_only') == 'true':
             queryset = queryset.filter(is_approved=True)
@@ -294,11 +326,13 @@ class UserViewSet(viewsets.ModelViewSet):
     def perform_destroy(self, instance):
         # Log action before deletion
         from .models import AuditLog
+        
+        actor = self.request.user
         AuditLog.objects.create(
-            actor=self.request.user,
+            actor=actor,
             target_user=instance,
             action="DEACTIVATION",
-            notes=f"User account deleted by admin: {instance.email}"
+            notes=f"Member account permanently deleted by admin ({actor.email}). Member: {instance.email}"
         )
         instance.delete()
 
@@ -351,7 +385,15 @@ class PendingUsersView(ListAPIView):
     serializer_class = PendingUserSerializer
 
     def get_queryset(self):
-        return User.objects.filter(is_approved=False)
+        user = self.request.user
+        if user.is_superuser or user.role == "ADMIN":
+            return User.objects.filter(is_approved=False)
+        
+        # Treasurers see pending users in their scope (placeholder)
+        if user.role == "TREASURER":
+            return User.objects.filter(is_approved=False)
+            
+        return User.objects.none()
 
 
 # ====================================================
@@ -492,12 +534,31 @@ class AdminStatsView(APIView):
         total_users = User.objects.count()
         pending_approvals = User.objects.filter(is_approved=False).count()
 
-        total_contributions = (
-            Contribution.objects.filter(status="PAID").aggregate(total=Sum("amount"))[
-                "total"
-            ]
+        # Total Savings (Base amount paid)
+        total_savings = (
+            Contribution.objects.filter(status__in=["PAID", "LATE"]).aggregate(
+                total=Sum("amount")
+            )["total"]
             or 0.00
         )
+
+        # Total Penalties Paid via contributions
+        paid_cont_penalties = (
+            Contribution.objects.filter(status__in=["PAID", "LATE"]).aggregate(
+                total=Sum("penalty")
+            )["total"]
+            or 0.00
+        )
+
+        # Standalone penalties issued (assuming received if we count them in grand total)
+        # or we might only want to count them once paid. 
+        # For simplicity and to match the user's request for balance, we'll sum all.
+        standalone_penalties = Penalty.objects.filter(contribution__isnull=True).aggregate(
+            total=Sum("amount")
+        )["total"] or 0.00
+
+        total_penalties = float(paid_cont_penalties) + float(standalone_penalties)
+        grand_total = float(total_savings) + float(total_penalties)
 
         pending_contributions = Contribution.objects.filter(status="PENDING").count()
 
@@ -505,7 +566,11 @@ class AdminStatsView(APIView):
             {
                 "total_users": total_users,
                 "pending_approvals": pending_approvals,
-                "total_contributions": total_contributions,
+                "total_savings": total_savings,
+                "total_penalties": total_penalties,
+                "grand_total": grand_total,
                 "pending_contributions_count": pending_contributions,
+                # Keep for backward compatibility if needed by old mobile version
+                "total_contributions": total_savings,
             }
         )

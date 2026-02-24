@@ -1,7 +1,10 @@
-from rest_framework import viewsets
+from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from django.utils import timezone
 
 from accounts.permissions import IsApprovedUser
 from finance.permissions import HasFinanceAccess, PenaltyPermission
@@ -27,7 +30,7 @@ class ContributionViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
 
-        if user.role == "ADMIN":
+        if user.is_superuser or user.role == "ADMIN":
             return Contribution.objects.all()
 
         if user.role == "TREASURER":
@@ -58,46 +61,66 @@ class ContributionViewSet(viewsets.ModelViewSet):
 
 
 class PenaltyViewSet(viewsets.ModelViewSet):
-    serializer_class = PenaltySerializer
-    permission_classes = [IsAuthenticated, IsApprovedUser, PenaltyPermission]
-
     def get_queryset(self):
         user = self.request.user
 
-        if user.role == "ADMIN":
+        if user.is_superuser or user.role == "ADMIN":
             return Penalty.objects.all()
 
         if user.role == "TREASURER":
-            return Penalty.objects.filter(contribution__group__treasurer=user)
+            # Penalties in groups where the user is treasurer
+            from django.db import models
+            return Penalty.objects.filter(
+                models.Q(contribution__group__treasurer=user) |
+                models.Q(user__membership__group__treasurer=user)
+            ).distinct()
 
         if user.role == "MEMBER":
-            return Penalty.objects.filter(contribution__user=user)
+            return Penalty.objects.filter(user=user)
 
         return Penalty.objects.none()
 
     def perform_create(self, serializer):
-        user = self.request.user
-        contribution = serializer.validated_data["contribution"]
+        actor = self.request.user
+        contribution = serializer.validated_data.get("contribution")
+        target_user = serializer.validated_data.get("user")
+
+        if not contribution and not target_user:
+            raise serializers.ValidationError("Either user or contribution must be provided.")
+
+        # If contribution is provided, ensure user is correct
+        if contribution and not target_user:
+            target_user = contribution.user
 
         # Treasurer scope check
-        if user.role == "TREASURER":
-            if contribution.group.treasurer != user:
-                raise PermissionDenied("Not your group.")
+        if actor.role == "TREASURER":
+            if contribution and contribution.group.treasurer != actor:
+                raise PermissionDenied("Not your group's contribution.")
+            # If no contribution, check if target_user is in actor's group
+            elif not contribution and target_user:
+                from groups.models import Membership
+                if not Membership.objects.filter(user=target_user, group__treasurer=actor).exists():
+                    raise PermissionDenied("User is not in your group.")
 
-        if user.role not in ["ADMIN", "TREASURER"]:
-            raise PermissionDenied("Members cannot create penalties.")
+        if actor.role not in ["ADMIN", "TREASURER"]:
+            raise PermissionDenied("Only Admins and Treasurers can create penalties.")
 
-        # ✅ hybrid logic: auto suggestion if amount not provided
-        amount = serializer.validated_data.get(
-            "amount", contribution.calculate_suggested_penalty()
-        )
+        amount = serializer.validated_data.get("amount")
+        if not amount and contribution:
+            amount = contribution.calculate_suggested_penalty()
+        
+        if not amount:
+            raise serializers.ValidationError("Amount is required if no contribution is linked or it has no suggested penalty.")
+
+        # Sync with contribution if linked
+        if contribution:
+            from decimal import Decimal
+            contribution.penalty = Decimal(str(amount))
+            contribution.save()
+
+        serializer.save(amount=amount, applied_by=actor, user=target_user)
 
 
-        serializer.save(amount=amount, applied_by=user)
-
-
-from rest_framework.views import APIView
-from rest_framework.response import Response
 from .services import InsightService
 from .serializers import InsightSerializer
 
@@ -162,7 +185,7 @@ class InvestmentViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
 
-        if user.role == "ADMIN":
+        if user.is_superuser or user.role == "ADMIN":
             return Investment.objects.all()
 
         if user.role == "TREASURER":
