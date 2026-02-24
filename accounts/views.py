@@ -417,7 +417,7 @@ class PasswordResetRequestView(APIView):
         uid = urlsafe_base64_encode(force_bytes(user.pk))
         token = token_generator.make_token(user)
 
-        reset_link = f"seedvest://reset-password/{uid}/{token}"
+        reset_link = f"{settings.FRONTEND_URL}/reset-password/{uid}/{token}/"
 
         print("Password reset requested for:", user_email)
         print("Generated link:", reset_link)
