@@ -75,6 +75,52 @@ class RegisterSerializer(serializers.ModelSerializer):
 
 
 # ====================================================
+# ADMIN USER REGISTRATION
+# ====================================================
+class AdminUserRegistrationSerializer(serializers.ModelSerializer):
+    """
+    Serializer for admins to create new users directly.
+    Bypasses standard activation flow and auto-approves.
+    """
+    role = serializers.ChoiceField(choices=User.ROLE_CHOICES, default='MEMBER')
+
+    class Meta:
+        model = User
+        fields = (
+            "email",
+            "first_name",
+            "last_name",
+            "phone_number",
+            "role",
+        )
+
+    def create(self, validated_data):
+        # Generate a random temporary password or handle password differently?
+        # For now, let's create without password and user will need to reset it,
+        # or we set a default one. Usually, for admin-added users, we might want
+        # to send a reset link immediately or set a temp one.
+        
+        user = User.objects.create_user(
+            email=validated_data["email"],
+            first_name=validated_data["first_name"],
+            last_name=validated_data["last_name"],
+            phone_number=validated_data.get("phone_number", ""),
+            password=User.objects.make_random_password(), # Random password
+            role=validated_data.get("role", "MEMBER"),
+            is_approved=True,
+            is_active=True,
+            application_status="APPROVED",
+        )
+        
+        # We should ideally trigger a password reset/setup email here
+        # For now, let's just create the user. Standard approval logic
+        # (generating membership number) should also be applied if needed.
+        user.approve_member(actor=self.context['request'].user)
+        
+        return user
+
+
+# ====================================================
 # USER APPROVAL / PENDING USERS
 # ====================================================
 class PendingUserSerializer(serializers.ModelSerializer):

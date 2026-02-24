@@ -44,6 +44,7 @@ from .serializers import (
     PasswordResetRequestSerializer,
     PasswordResetConfirmSerializer,
     UserProfileSerializer,
+    AdminUserRegistrationSerializer,
 )
 from .tokens import account_activation_token
 
@@ -180,6 +181,27 @@ class UserViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(is_approved=True)
             
         return queryset
+
+    @action(detail=False, methods=["post"])
+    def admin_register(self, request):
+        """
+        Allows admins to register new members directly.
+        """
+        serializer = AdminUserRegistrationSerializer(
+            data=request.data, 
+            context={'request': request}
+        )
+        if serializer.is_valid():
+            user = serializer.save()
+            return Response(
+                {
+                    "message": "User registered successfully by admin",
+                    "user_id": user.id,
+                    "membership_number": user.membership_number
+                },
+                status=status.HTTP_201_CREATED
+            )
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):
