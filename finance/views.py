@@ -1,4 +1,5 @@
 from rest_framework import viewsets
+from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import PermissionDenied
 
@@ -39,6 +40,21 @@ class ContributionViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
+
+    @action(detail=True, methods=["post"])
+    def approve(self, request, pk=None):
+        contribution = self.get_object()
+        contribution.status = "PAID"
+        contribution.paid_date = timezone.now().date()
+        contribution.save()
+        return Response({"status": "Contribution approved"})
+
+    @action(detail=True, methods=["post"])
+    def reject(self, request, pk=None):
+        contribution = self.get_object()
+        contribution.status = "REJECTED"
+        contribution.save()
+        return Response({"status": "Contribution rejected"})
 
 
 class PenaltyViewSet(viewsets.ModelViewSet):

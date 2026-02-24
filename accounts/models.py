@@ -19,8 +19,20 @@ class User(AbstractUser):
         ("MEMBER", "Member"),
     )
 
+    APPLICATION_STATUS_CHOICES = [
+        ("PENDING", "Pending"),
+        ("UNDER_REVIEW", "Under Review"),
+        ("APPROVED", "Approved"),
+        ("REJECTED", "Rejected"),
+    ]
+
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default="MEMBER")
     is_approved = models.BooleanField(default=False)
+    application_status = models.CharField(
+        max_length=20,
+        choices=APPLICATION_STATUS_CHOICES,
+        default="PENDING",
+    )
 
     membership_number = models.CharField(
         max_length=20, unique=True, blank=True, null=True
@@ -28,10 +40,11 @@ class User(AbstractUser):
 
     objects = UserManager()  # ✅ THIS IS THE KEY LINE
 
-    def approve_member(self):
-        if not self.is_approved:
-            self.is_approved = True
+    def approve_member(self, actor=None):
+        if self.application_status != "APPROVED":
             self.membership_number = self.generate_membership_number()
+            self.is_approved = True
+            self.application_status = "APPROVED"
             self.save()
 
             from notifications.models import Notification
@@ -49,10 +62,23 @@ class User(AbstractUser):
             send_membership_approved_email(self)
 
     def generate_membership_number(self):
-        # Format: MM + YY + Month + Padded ID (e.g., MM2602001)
-        year = self.date_joined.strftime("%y")
-        month = self.date_joined.strftime("%m")
-        return f"MM{year}{month}{self.id:03d}"
+        from datetime import datetime
+        year = datetime.now().year
+        last_member = User.objects.filter(
+            membership_number__isnull=False
+        ).order_by("-id").first()
+
+        if last_member and last_member.membership_number:
+            try:
+                # Expecting format MBR-YYYY-XXXX
+                last_number = int(last_member.membership_number.split("-")[-1])
+                new_number = last_number + 1
+            except (ValueError, IndexError):
+                new_number = 1
+        else:
+            new_number = 1
+
+        return f"MBR-{year}-{new_number:04d}"
 
     def __str__(self):
         return self.email
@@ -65,6 +91,7 @@ class AuditLog(models.Model):
         ("DEACTIVATION", "Deactivation"),
         ("LOGIN", "Login"),
         ("PASSWORD_RESET", "Password Reset"),
+        ("ROLE_CHANGE", "Role Change"),
     )
 
     actor = models.ForeignKey(

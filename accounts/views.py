@@ -37,7 +37,7 @@ from .emails import (
     send_membership_rejected_email,
     send_role_updated_email,
 )
-from .permissions import IsAdminOrTreasurer
+from .permissions import IsAdminOrTreasurer, IsApprovedUser
 from .serializers import (
     RegisterSerializer,
     PendingUserSerializer,
@@ -94,11 +94,12 @@ class LoginView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        if not getattr(user, "is_approved", False):
-            return Response(
-                {"error": "Account pending approval"},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        if not user.is_superuser:
+            if not getattr(user, "is_approved", False) or user.application_status != "APPROVED":
+                return Response(
+                    {"error": f"Account status: {user.get_application_status_display()}. Please await admin approval."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
         refresh = RefreshToken.for_user(user)
 
@@ -110,6 +111,7 @@ class LoginView(APIView):
                 "expires_in": 3600,
                 "user_id": user.id,
                 "full_name": f"{user.first_name} {user.last_name}",
+                "is_superuser": user.is_superuser,
             },
             status=status.HTTP_200_OK,
         )
@@ -138,7 +140,20 @@ class ActivateAccountView(APIView):
             )
 
         user.is_active = True
-        user.save(update_fields=["is_active"])
+        user.application_status = "UNDER_REVIEW"
+        user.save(update_fields=["is_active", "application_status"])
+
+        # Notify Admins/Treasurers
+        from notifications.models import Notification
+        admins = User.objects.filter(role__in=["ADMIN", "TREASURER"])
+        for admin in admins:
+            Notification.objects.create(
+                recipient=admin,
+                title="New Membership Application",
+                message=f"{user.first_name} {user.last_name} has activated their account and is ready for review.",
+                type="INFO",
+                link="/governance/approvals",
+            )
 
         return Response(
             {"message": "Account activated. Await admin approval."},
@@ -150,27 +165,42 @@ class ActivateAccountView(APIView):
 # USER ADMIN / APPROVAL
 # ====================================================
 class UserViewSet(viewsets.ModelViewSet):
-    queryset = User.objects.all()
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated, IsAdminOrTreasurer]
+
+    def get_queryset(self):
+        """
+        Admins can see all users, Treasurers can see members and other Treasurers.
+        For role management, we often only care about APPROVED users.
+        """
+        queryset = User.objects.all().order_by("-date_joined")
+        
+        # If accessing the list (e.g., for role management), filter by approval if requested
+        if self.action == 'list' and self.request.query_params.get('approved_only') == 'true':
+            queryset = queryset.filter(is_approved=True)
+            
+        return queryset
 
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):
         user = self.get_object()
 
-        if user.is_approved:
+        if user.application_status == "APPROVED":
             return Response(
                 {"message": "User already approved"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if not user.is_active:
-            return Response(
-                {"error": "User must activate account first"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        user.approve_member(actor=request.user)
 
-        user.approve_member()
+        # Log action
+        from .models import AuditLog
+        AuditLog.objects.create(
+            actor=request.user,
+            target_user=user,
+            action="APPROVAL",
+            notes=f"Member approved with ID: {user.membership_number}"
+        )
 
         return Response(
             {
@@ -187,10 +217,13 @@ class UserViewSet(viewsets.ModelViewSet):
             "reason", "Application does not meet current criteria."
         )
 
-        send_membership_rejected_email(user, reason)
-
+        user.application_status = "REJECTED"
         user.is_active = False
-        user.save(update_fields=["is_active"])
+        user.save(update_fields=["application_status", "is_active"])
+
+        # Send Email
+        from .emails import send_membership_rejected_email
+        send_membership_rejected_email(user, reason)
 
         return Response(
             {"message": "User rejected and email sent."},
@@ -204,18 +237,66 @@ class UserViewSet(viewsets.ModelViewSet):
 
         if new_role not in dict(User.ROLE_CHOICES):
             return Response(
-                {"error": "Invalid role"},
+                {"error": f"Invalid role. Choices are: {list(dict(User.ROLE_CHOICES).keys())}"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Safety check: Prevent self-demotion unless superuser
+        if user == request.user and not request.user.is_superuser:
+            if new_role != "ADMIN":
+                return Response(
+                    {"error": "You cannot demote yourself. Please contact another administrator or superuser."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        old_role = user.role
         user.role = new_role
         user.save(update_fields=["role"])
+
+        # Log action
+        from .models import AuditLog
+        AuditLog.objects.create(
+            actor=request.user,
+            target_user=user,
+            action="ROLE_CHANGE",
+            notes=f"Role changed from {old_role} to {new_role}"
+        )
 
         send_role_updated_email(user, new_role)
 
         return Response(
-            {"message": f"Role updated to {new_role} and email sent."},
+            {"message": f"Role for {user.email} updated to {new_role}.", "role": new_role},
             status=status.HTTP_200_OK,
+        )
+
+    def perform_destroy(self, instance):
+        # Log action before deletion
+        from .models import AuditLog
+        AuditLog.objects.create(
+            actor=self.request.user,
+            target_user=instance,
+            action="DEACTIVATION",
+            notes=f"User account deleted by admin: {instance.email}"
+        )
+        instance.delete()
+
+    @action(detail=False, methods=["delete"], permission_classes=[IsAuthenticated])
+    def delete_account(self, request):
+        user = request.user
+        
+        # Log action
+        from .models import AuditLog
+        AuditLog.objects.create(
+            actor=user,
+            target_user=user,
+            action="DEACTIVATION",
+            notes="User deleted their own account."
+        )
+        
+        user.delete()
+        return Response(
+            {"message": "Account deleted successfully."},
+            status=status.HTTP_204_NO_CONTENT,
         )
 
     @action(detail=False, methods=["get", "patch", "put"])
@@ -345,21 +426,6 @@ class PasswordResetConfirmView(APIView):
         return Response(
             {"detail": "Password reset successful."},
             status=status.HTTP_200_OK,
-        )
-
-
-# ====================================================
-# CUSTOM PERMISSION
-# ====================================================
-class IsApprovedUser(BasePermission):
-    message = "You must be an approved user to perform this action."
-
-    def has_permission(self, request, view):
-        user = request.user
-        return (
-            user.is_authenticated
-            and user.is_active
-            and getattr(user, "is_approved", False)
         )
 
 

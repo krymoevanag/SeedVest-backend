@@ -59,6 +59,7 @@ class RegisterSerializer(serializers.ModelSerializer):
             role="MEMBER",
             is_approved=False,
             is_active=False,
+            application_status="PENDING",
         )
 
         uid = urlsafe_base64_encode(force_bytes(user.pk))
@@ -81,10 +82,13 @@ class PendingUserSerializer(serializers.ModelSerializer):
         model = User
         fields = (
             "id",
-            "username",
             "email",
+            "first_name",
+            "last_name",
             "role",
             "is_approved",
+            "application_status",
+            "is_superuser",
             "membership_number",
             "date_joined",
         )
@@ -118,6 +122,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             "last_name",
             "phone_number",
             "role",
+            "is_superuser",
             "membership_number",
             "is_approved",
         )
@@ -126,6 +131,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             "username",
             "email",
             "role",
+            "is_superuser",
             "membership_number",
             "is_approved",
         )

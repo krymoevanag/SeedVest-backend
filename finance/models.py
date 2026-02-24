@@ -48,6 +48,7 @@ class Contribution(models.Model):
         ("PAID", "Paid"),
         ("LATE", "Late"),
         ("OVERDUE", "Overdue"),
+        ("REJECTED", "Rejected"),
     ]
 
     user = models.ForeignKey(
