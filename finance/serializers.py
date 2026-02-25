@@ -221,6 +221,32 @@ class AdminAddContributionSerializer(serializers.Serializer):
             raise serializers.ValidationError("Group not found.")
         return value
 
+    def validate(self, attrs):
+        user = User.objects.get(pk=attrs["user_id"])
+        group = Group.objects.get(pk=attrs["group_id"])
+
+        if not Membership.objects.filter(user=user, group=group).exists():
+            raise serializers.ValidationError(
+                {"group_id": "Selected member does not belong to this group."}
+            )
+
+        request = self.context.get("request")
+        actor = getattr(request, "user", None)
+        if (
+            actor is not None
+            and actor.is_authenticated
+            and actor.role == "TREASURER"
+            and group.treasurer_id != actor.id
+            and not actor.is_superuser
+        ):
+            raise serializers.ValidationError(
+                {"group_id": "You can only add contributions for your own group."}
+            )
+
+        attrs["user_obj"] = user
+        attrs["group_obj"] = group
+        return attrs
+
     def validate_amount(self, value):
         if value <= 0:
             raise serializers.ValidationError("Amount must be greater than zero.")
@@ -229,10 +255,12 @@ class AdminAddContributionSerializer(serializers.Serializer):
     def create(self, validated_data):
         from datetime import date
         paid_date = validated_data.get('paid_date', date.today())
+        user = validated_data["user_obj"]
+        group = validated_data["group_obj"]
 
         contribution = Contribution(
-            user_id=validated_data['user_id'],
-            group_id=validated_data['group_id'],
+            user=user,
+            group=group,
             amount=validated_data['amount'],
             due_date=paid_date,
             paid_date=paid_date,

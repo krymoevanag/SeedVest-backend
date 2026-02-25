@@ -8,6 +8,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
 from .tokens import account_activation_token
+from .models import AuditLog
 
 User = get_user_model()
 
@@ -25,6 +26,7 @@ class RegistrationTests(APITestCase):
             "last_name": "One",
             "password": "TestPass123!",
             "password2": "TestPass123!",
+            "terms_accepted": True,
         }
         response = self.client.post(url, data)
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
@@ -32,6 +34,20 @@ class RegistrationTests(APITestCase):
         user = User.objects.get(email="member1@test.com")
         self.assertFalse(user.is_approved)
         self.assertFalse(user.is_active)
+
+    def test_user_registration_fails_without_terms_acceptance(self):
+        url = reverse("register")
+        data = {
+            "email": "member2@test.com",
+            "first_name": "Member",
+            "last_name": "Two",
+            "password": "TestPass123!",
+            "password2": "TestPass123!",
+            "terms_accepted": False,
+        }
+        response = self.client.post(url, data)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("terms_accepted", response.data)
 
 
 # -------------------------
@@ -142,6 +158,14 @@ class SuccessfulLoginTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn("access", response.data)
         self.assertIn("refresh", response.data)
+
+    def test_login_is_case_insensitive_for_email(self):
+        url = reverse("login")
+        response = self.client.post(
+            url, {"email": "ActiveUser@Test.com", "password": "pass123"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("access", response.data)
 
 
 # -------------------------
@@ -437,3 +461,75 @@ class AdminStatsTests(APITestCase):
         url = reverse("admin-stats")
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+# -------------------------
+# Delete Member Tests
+# -------------------------
+class DeleteMemberTests(APITestCase):
+
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            email="delete-admin@seedvest.com",
+            password="AdminDelete123!",
+            role="ADMIN",
+            is_active=True,
+            is_approved=True,
+        )
+        self.member = User.objects.create_user(
+            email="delete-target@seedvest.com",
+            password="MemberDelete123!",
+            role="MEMBER",
+            is_active=True,
+            is_approved=True,
+        )
+
+    def test_admin_can_delete_member_and_db_is_updated(self):
+        existing_log = AuditLog.objects.create(
+            actor=self.admin,
+            target_user=self.member,
+            action="APPROVAL",
+            notes="Pre-delete audit entry for target member.",
+        )
+
+        admin_refresh = RefreshToken.for_user(self.admin)
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f"Bearer {admin_refresh.access_token}"
+        )
+
+        url = reverse("user-detail", args=[self.member.id])
+        response = self.client.delete(url)
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(User.objects.filter(id=self.member.id).exists())
+
+        existing_log.refresh_from_db()
+        self.assertIsNone(existing_log.target_user)
+
+        self.assertTrue(
+            AuditLog.objects.filter(
+                actor=self.admin,
+                action="DEACTIVATION",
+                notes__contains=self.member.email,
+            ).exists()
+        )
+
+    def test_member_cannot_delete_another_member(self):
+        other_member = User.objects.create_user(
+            email="delete-other@seedvest.com",
+            password="OtherMember123!",
+            role="MEMBER",
+            is_active=True,
+            is_approved=True,
+        )
+
+        member_refresh = RefreshToken.for_user(self.member)
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f"Bearer {member_refresh.access_token}"
+        )
+
+        url = reverse("user-detail", args=[other_member.id])
+        response = self.client.delete(url)
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(User.objects.filter(id=other_member.id).exists())

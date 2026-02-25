@@ -221,7 +221,10 @@ class AdminAddContributionView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        serializer = AdminAddContributionSerializer(data=request.data)
+        serializer = AdminAddContributionSerializer(
+            data=request.data,
+            context={"request": request},
+        )
         if serializer.is_valid():
             contribution = serializer.save()
             return Response(

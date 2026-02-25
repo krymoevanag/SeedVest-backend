@@ -24,6 +24,7 @@ User = get_user_model()
 # ====================================================
 class RegisterSerializer(serializers.ModelSerializer):
     password2 = serializers.CharField(write_only=True)
+    terms_accepted = serializers.BooleanField(write_only=True)
 
     class Meta:
         model = User
@@ -31,14 +32,21 @@ class RegisterSerializer(serializers.ModelSerializer):
             "email",
             "first_name",
             "last_name",
+            "phone_number",
             "password",
             "password2",
+            "terms_accepted",
         )
         extra_kwargs = {
             "password": {"write_only": True},
         }
 
     def validate(self, attrs):
+        if not attrs.get("terms_accepted", False):
+            raise serializers.ValidationError(
+                {"terms_accepted": "You must accept the Terms & Conditions."}
+            )
+
         if attrs["password"] != attrs["password2"]:
             raise serializers.ValidationError({"password": "Passwords do not match."})
         
@@ -53,11 +61,13 @@ class RegisterSerializer(serializers.ModelSerializer):
     @transaction.atomic
     def create(self, validated_data):
         validated_data.pop("password2")
+        validated_data.pop("terms_accepted")
 
         user = User.objects.create_user(
             email=validated_data["email"],
             first_name=validated_data["first_name"],
             last_name=validated_data["last_name"],
+            phone_number=validated_data.get("phone_number", ""),
             password=validated_data["password"],
             role="MEMBER",
             is_approved=False,
