@@ -45,6 +45,7 @@ from .serializers import (
     PasswordResetConfirmSerializer,
     UserProfileSerializer,
     AdminUserRegistrationSerializer,
+    ChangePasswordSerializer,
 )
 from .tokens import account_activation_token
 
@@ -377,6 +378,36 @@ class UserViewSet(viewsets.ModelViewSet):
         return Response(
             {"message": "Account deleted successfully."},
             status=status.HTTP_204_NO_CONTENT,
+        )
+
+    @action(
+        detail=False,
+        methods=["post"],
+        permission_classes=[IsAuthenticated],
+        url_path="change-password",
+        url_name="change-password",
+    )
+    def change_password(self, request):
+        serializer = ChangePasswordSerializer(
+            data=request.data,
+            context={"request": request},
+        )
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer.save()
+
+        from .models import AuditLog
+        AuditLog.objects.create(
+            actor=request.user,
+            target_user=request.user,
+            action="PASSWORD_RESET",
+            notes="User changed their password from security settings.",
+        )
+
+        return Response(
+            {"message": "Password changed successfully."},
+            status=status.HTTP_200_OK,
         )
 
     @action(detail=False, methods=["get", "patch", "put"])

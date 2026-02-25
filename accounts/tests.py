@@ -423,6 +423,81 @@ class UserMeEndpointTests(APITestCase):
 
 
 # -------------------------
+# Change Password Tests
+# -------------------------
+class ChangePasswordTests(APITestCase):
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="security@seedvest.com",
+            password="OldPass123!",
+            first_name="Security",
+            last_name="User",
+            is_active=True,
+            is_approved=True,
+        )
+        refresh = RefreshToken.for_user(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+    def test_authenticated_user_can_change_password(self):
+        url = reverse("user-change-password")
+        response = self.client.post(
+            url,
+            {
+                "current_password": "OldPass123!",
+                "new_password": "NewSecurePass123!",
+                "confirm_password": "NewSecurePass123!",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("message", response.data)
+
+        self.client.credentials()
+        old_login = self.client.post(
+            reverse("login"),
+            {"email": self.user.email, "password": "OldPass123!"},
+            format="json",
+        )
+        self.assertEqual(old_login.status_code, status.HTTP_401_UNAUTHORIZED)
+
+        new_login = self.client.post(
+            reverse("login"),
+            {"email": self.user.email, "password": "NewSecurePass123!"},
+            format="json",
+        )
+        self.assertEqual(new_login.status_code, status.HTTP_200_OK)
+
+    def test_change_password_fails_with_wrong_current_password(self):
+        url = reverse("user-change-password")
+        response = self.client.post(
+            url,
+            {
+                "current_password": "WrongPass123!",
+                "new_password": "AnotherSecure123!",
+                "confirm_password": "AnotherSecure123!",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("current_password", response.data)
+
+    def test_change_password_requires_authentication(self):
+        self.client.credentials()
+        url = reverse("user-change-password")
+        response = self.client.post(
+            url,
+            {
+                "current_password": "OldPass123!",
+                "new_password": "AnotherSecure123!",
+                "confirm_password": "AnotherSecure123!",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+# -------------------------
 # Admin Stats Tests
 # -------------------------
 class AdminStatsTests(APITestCase):

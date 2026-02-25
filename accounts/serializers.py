@@ -243,6 +243,32 @@ class UserProfileSerializer(serializers.ModelSerializer):
         return float(paid_penalties) + float(standalone_penalties)
 
 
+class ChangePasswordSerializer(serializers.Serializer):
+    current_password = serializers.CharField(write_only=True)
+    new_password = serializers.CharField(write_only=True, min_length=8)
+    confirm_password = serializers.CharField(write_only=True, min_length=8)
+
+    def validate_current_password(self, value):
+        user = self.context["request"].user
+        if not user.check_password(value):
+            raise serializers.ValidationError("Current password is incorrect.")
+        return value
+
+    def validate(self, attrs):
+        if attrs["new_password"] != attrs["confirm_password"]:
+            raise serializers.ValidationError(
+                {"confirm_password": "New password and confirm password do not match."}
+            )
+
+        validate_password(attrs["new_password"], self.context["request"].user)
+        return attrs
+
+    def save(self):
+        user = self.context["request"].user
+        user.set_password(self.validated_data["new_password"])
+        user.save(update_fields=["password"])
+
+
 # ====================================================
 # PASSWORD RESET
 # ====================================================
