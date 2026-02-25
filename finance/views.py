@@ -15,6 +15,7 @@ from .serializers import (
     AutoSavingConfigSerializer,
     SavingsTargetSerializer,
     InvestmentSerializer,
+    AdminAddContributionSerializer,
 )
 
 
@@ -201,3 +202,30 @@ class InvestmentViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
 
+
+# =========================
+# Admin Add Contribution
+# =========================
+class AdminAddContributionView(APIView):
+    """
+    Allows admins/treasurers to manually add a contribution for a member.
+    The contribution is created as PAID immediately.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        if user.role not in ("ADMIN", "TREASURER") and not user.is_superuser:
+            return Response(
+                {"detail": "Only admins and treasurers can add contributions."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = AdminAddContributionSerializer(data=request.data)
+        if serializer.is_valid():
+            contribution = serializer.save()
+            return Response(
+                ContributionSerializer(contribution).data,
+                status=status.HTTP_201_CREATED,
+            )
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from django.contrib.auth import get_user_model
 from .models import (
     Contribution,
     Penalty,
@@ -7,7 +8,9 @@ from .models import (
     Investment,
 )
 from .constants import MIN_MONTHLY_SAVING
-from groups.models import Membership
+from groups.models import Group, Membership
+
+User = get_user_model()
 
 
 class ContributionSerializer(serializers.ModelSerializer):
@@ -197,3 +200,47 @@ class InvestmentSerializer(serializers.ModelSerializer):
 
         return attrs
 
+
+class AdminAddContributionSerializer(serializers.Serializer):
+    user_id = serializers.IntegerField()
+    group_id = serializers.IntegerField()
+    amount = serializers.DecimalField(max_digits=10, decimal_places=2)
+    paid_date = serializers.DateField(required=False)
+
+    def validate_user_id(self, value):
+        try:
+            user = User.objects.get(pk=value, is_approved=True)
+        except User.DoesNotExist:
+            raise serializers.ValidationError("User not found or not approved.")
+        return value
+
+    def validate_group_id(self, value):
+        try:
+            Group.objects.get(pk=value)
+        except Group.DoesNotExist:
+            raise serializers.ValidationError("Group not found.")
+        return value
+
+    def validate_amount(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Amount must be greater than zero.")
+        return value
+
+    def create(self, validated_data):
+        from datetime import date
+        paid_date = validated_data.get('paid_date', date.today())
+
+        contribution = Contribution(
+            user_id=validated_data['user_id'],
+            group_id=validated_data['group_id'],
+            amount=validated_data['amount'],
+            due_date=paid_date,
+            paid_date=paid_date,
+            status='PAID',
+        )
+        # Skip the auto status evaluation on save by setting status explicitly after
+        contribution.save()
+        # Force status to PAID (save() runs evaluate_status which may override)
+        Contribution.objects.filter(pk=contribution.pk).update(status='PAID')
+        contribution.refresh_from_db()
+        return contribution
