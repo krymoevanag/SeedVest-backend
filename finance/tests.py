@@ -1,3 +1,5 @@
+from datetime import date
+
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -125,3 +127,95 @@ class AdminAddContributionTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("group_id", response.data)
+
+    def test_member_manual_proposal_is_created_as_pending(self):
+        member_refresh = RefreshToken.for_user(self.member)
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f"Bearer {member_refresh.access_token}"
+        )
+        url = reverse("contribution-list")
+        payload = {
+            "group_id": self.group.id,
+            "amount": "1250.00",
+            "reported_paid_date": date.today().isoformat(),
+            "reported_payment_method": "BANK_TRANSFER",
+            "reported_reference": "RTGS-8871",
+            "reported_note": "Paid directly at branch.",
+        }
+
+        response = self.client.post(url, payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["status"], "PENDING")
+        self.assertTrue(response.data["is_manual_entry"])
+        self.assertEqual(response.data["reported_payment_method"], "BANK_TRANSFER")
+        self.assertEqual(response.data["reported_reference"], "RTGS-8871")
+        self.assertIsNone(response.data["paid_date"])
+
+    def test_manual_proposal_approval_marks_paid_and_updates_totals(self):
+        member_refresh = RefreshToken.for_user(self.member)
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f"Bearer {member_refresh.access_token}"
+        )
+        proposal_date = date(2026, 2, 20)
+        create_response = self.client.post(
+            reverse("contribution-list"),
+            {
+                "group_id": self.group.id,
+                "amount": "1750.00",
+                "reported_paid_date": proposal_date.isoformat(),
+                "reported_payment_method": "CASH",
+            },
+            format="json",
+        )
+        contribution_id = create_response.data["id"]
+
+        admin_refresh = RefreshToken.for_user(self.admin)
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f"Bearer {admin_refresh.access_token}"
+        )
+
+        stats_before = self.client.get(reverse("admin-stats"))
+        self.assertEqual(stats_before.status_code, status.HTTP_200_OK)
+        self.assertEqual(int(stats_before.data["pending_contributions_count"]), 1)
+
+        approve_response = self.client.post(
+            reverse("contribution-approve", args=[contribution_id]),
+            {},
+            format="json",
+        )
+        self.assertEqual(approve_response.status_code, status.HTTP_200_OK)
+
+        contribution = Contribution.objects.get(pk=contribution_id)
+        self.assertEqual(contribution.status, "PAID")
+        self.assertEqual(contribution.paid_date, proposal_date)
+        self.assertEqual(contribution.reviewed_by, self.admin)
+
+        stats_after = self.client.get(reverse("admin-stats"))
+        self.assertEqual(stats_after.status_code, status.HTTP_200_OK)
+        self.assertEqual(int(stats_after.data["pending_contributions_count"]), 0)
+        self.assertEqual(float(stats_after.data["total_savings"]), 1750.0)
+
+    def test_member_cannot_approve_own_pending_contribution(self):
+        contribution = Contribution.objects.create(
+            user=self.member,
+            group=self.group,
+            amount="900.00",
+            due_date=date.today(),
+            is_manual_entry=True,
+            status="PENDING",
+        )
+
+        member_refresh = RefreshToken.for_user(self.member)
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f"Bearer {member_refresh.access_token}"
+        )
+        response = self.client.post(
+            reverse("contribution-approve", args=[contribution.id]),
+            {},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        contribution.refresh_from_db()
+        self.assertEqual(contribution.status, "PENDING")

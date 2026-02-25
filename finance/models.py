@@ -54,6 +54,14 @@ class Penalty(models.Model):
 # Contribution Model
 # =========================
 class Contribution(models.Model):
+    PAYMENT_METHOD_CHOICES = [
+        ("M_PESA", "M-Pesa"),
+        ("BANK_TRANSFER", "Bank Transfer"),
+        ("BANK_DEPOSIT", "Bank Deposit"),
+        ("CASH", "Cash"),
+        ("OTHER", "Other"),
+    ]
+
     STATUS_CHOICES = [
         ("PENDING", "Pending"),
         ("PAID", "Paid"),
@@ -90,6 +98,32 @@ class Contribution(models.Model):
         help_text="System suggested or manually adjusted penalty",
     )
 
+    is_manual_entry = models.BooleanField(
+        default=False,
+        help_text="True when the contribution was reported manually for admin verification.",
+    )
+    reported_paid_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Date the member reports they paid outside the system.",
+    )
+    reported_payment_method = models.CharField(
+        max_length=20,
+        choices=PAYMENT_METHOD_CHOICES,
+        blank=True,
+        default="",
+    )
+    reported_reference = models.CharField(max_length=100, blank=True, default="")
+    reported_note = models.TextField(blank=True, default="")
+    reviewed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reviewed_finance_contributions",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -102,6 +136,9 @@ class Contribution(models.Model):
     # Status Logic
     # -------------------------
     def evaluate_status(self):
+        if self.status == "REJECTED":
+            return "REJECTED"
+
         today = date.today()
 
         if self.paid_date:
@@ -117,6 +154,9 @@ class Contribution(models.Model):
     # -------------------------
     def calculate_suggested_penalty(self):
         today = timezone.now().date()
+
+        if self.status == "REJECTED":
+            return Decimal("0.00")
 
         # No penalty if already paid
         if self.paid_date:
@@ -144,7 +184,11 @@ class Contribution(models.Model):
     # Auto-update on save
     # -------------------------
     def save(self, *args, **kwargs):
-        self.status = self.evaluate_status()
+        skip_status_evaluation = kwargs.pop("skip_status_evaluation", False)
+
+        if not skip_status_evaluation:
+            self.status = self.evaluate_status()
+
         suggested_penalty = self.calculate_suggested_penalty()
 
         # Only auto-apply if treasurer hasn't overridden

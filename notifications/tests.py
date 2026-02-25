@@ -3,7 +3,7 @@ from rest_framework.test import APITestCase
 from rest_framework import status
 from django.contrib.auth import get_user_model
 from finance.models import Contribution, Penalty
-from groups.models import Group
+from groups.models import Group, Membership
 from .models import Notification
 from decimal import Decimal
 from datetime import date
@@ -22,6 +22,7 @@ class NotificationTests(APITestCase):
             is_approved=True,
         )
         self.client.force_authenticate(user=self.user)
+        self.initial_count = Notification.objects.filter(recipient=self.user).count()
 
     def test_create_notification(self):
         Notification.objects.create(
@@ -30,7 +31,16 @@ class NotificationTests(APITestCase):
             message="This is a test.",
             type="INFO",
         )
-        self.assertEqual(Notification.objects.count(), 1)
+        self.assertEqual(
+            Notification.objects.filter(
+                recipient=self.user, title="Test Notification"
+            ).count(),
+            1,
+        )
+        self.assertEqual(
+            Notification.objects.filter(recipient=self.user).count(),
+            self.initial_count + 1,
+        )
 
     def test_list_notifications(self):
         Notification.objects.create(
@@ -48,7 +58,9 @@ class NotificationTests(APITestCase):
         response = self.client.get(url)
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data), 2)
+        titles = [item["title"] for item in response.data]
+        self.assertIn("Notification 1", titles)
+        self.assertIn("Notification 2", titles)
 
     def test_mark_as_read(self):
         notification = Notification.objects.create(
@@ -90,8 +102,16 @@ class NotificationTriggerTests(APITestCase):
         self.user.approve_member()
         
         # Check notification
-        self.assertTrue(Notification.objects.filter(recipient=self.user).exists())
-        notif = Notification.objects.get(recipient=self.user)
+        self.assertTrue(
+            Notification.objects.filter(
+                recipient=self.user,
+                title="Membership Approved",
+            ).exists()
+        )
+        notif = Notification.objects.get(
+            recipient=self.user,
+            title="Membership Approved",
+        )
         self.assertEqual(notif.title, "Membership Approved")
         self.assertIn("membership number", notif.message)
 
@@ -126,3 +146,105 @@ class NotificationTriggerTests(APITestCase):
         Membership.objects.create(user=self.user, group=group, role="MEMBER")
         
         self.assertTrue(Notification.objects.filter(recipient=self.user, title="Group Membership").exists())
+
+
+class NotificationPreferencesAndProposalTests(APITestCase):
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            email="notify-admin@seedvest.com",
+            password="pass123",
+            role="ADMIN",
+            is_active=True,
+            is_approved=True,
+        )
+        self.member = User.objects.create_user(
+            email="notify-member@seedvest.com",
+            password="pass123",
+            role="MEMBER",
+            is_active=True,
+            is_approved=True,
+        )
+        self.group = Group.objects.create(
+            name="Alerts Group",
+            treasurer=self.admin,
+        )
+        Membership.objects.create(user=self.member, group=self.group, role="MEMBER")
+
+    def test_broadcast_internal_message_targets_members(self):
+        self.client.force_authenticate(user=self.admin)
+        url = reverse("notification-broadcast")
+        payload = {
+            "title": "System Reminder",
+            "message": "Monthly meeting on Saturday.",
+            "type": "INFO",
+        }
+        response = self.client.post(url, payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(
+            Notification.objects.filter(
+                recipient=self.member,
+                title="System Reminder",
+                category="INTERNAL",
+            ).exists()
+        )
+        self.assertFalse(
+            Notification.objects.filter(
+                recipient=self.admin,
+                title="System Reminder",
+                category="INTERNAL",
+            ).exists()
+        )
+
+    def test_member_can_mute_internal_messages(self):
+        Notification.objects.create(
+            recipient=self.member,
+            title="Internal Notice",
+            message="Members only",
+            category="INTERNAL",
+            type="INFO",
+        )
+        Notification.objects.create(
+            recipient=self.member,
+            title="System Notice",
+            message="System event",
+            category="SYSTEM",
+            type="INFO",
+        )
+
+        self.client.force_authenticate(user=self.member)
+        prefs_url = reverse("notification-preferences")
+        response = self.client.patch(
+            prefs_url,
+            {"mute_internal_messages": True},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["mute_internal_messages"])
+
+        list_response = self.client.get(reverse("notification-list"))
+        self.assertEqual(list_response.status_code, status.HTTP_200_OK)
+        self.assertTrue(
+            all(item["category"] != "INTERNAL" for item in list_response.data)
+        )
+        self.assertTrue(
+            any(item["category"] == "SYSTEM" for item in list_response.data)
+        )
+
+    def test_manual_contribution_proposal_creates_admin_notification(self):
+        Contribution.objects.create(
+            user=self.member,
+            group=self.group,
+            amount=Decimal("1500.00"),
+            due_date=date.today(),
+            is_manual_entry=True,
+            status="PENDING",
+        )
+
+        self.assertTrue(
+            Notification.objects.filter(
+                recipient=self.admin,
+                category="PROPOSAL",
+                title="Contribution Proposal Submitted",
+            ).exists()
+        )

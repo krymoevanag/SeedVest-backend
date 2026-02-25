@@ -1,4 +1,4 @@
-from rest_framework import viewsets, status
+from rest_framework import serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import PermissionDenied
@@ -11,6 +11,7 @@ from finance.permissions import HasFinanceAccess, PenaltyPermission
 from .models import Contribution, Penalty, AutoSavingConfig, SavingsTarget, Investment
 from .serializers import (
     ContributionSerializer,
+    ManualContributionProposalSerializer,
     PenaltySerializer,
     AutoSavingConfigSerializer,
     SavingsTargetSerializer,
@@ -20,13 +21,16 @@ from .serializers import (
 
 
 class ContributionViewSet(viewsets.ModelViewSet):
-    serializer_class = ContributionSerializer
-
     def get_permissions(self):
         permissions = [IsAuthenticated(), IsApprovedUser()]
         if self.action == "create":
             permissions.append(HasFinanceAccess())
         return permissions
+
+    def get_serializer_class(self):
+        if self.action == "create":
+            return ManualContributionProposalSerializer
+        return ContributionSerializer
 
     def get_queryset(self):
         user = self.request.user
@@ -45,19 +49,86 @@ class ContributionViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
 
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        contribution = serializer.save(user=request.user)
+        data = ContributionSerializer(
+            contribution,
+            context=self.get_serializer_context(),
+        ).data
+        headers = self.get_success_headers(data)
+        return Response(data, status=status.HTTP_201_CREATED, headers=headers)
+
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):
+        user = request.user
+        if user.role not in ("ADMIN", "TREASURER") and not user.is_superuser:
+            return Response(
+                {"detail": "Only admins and treasurers can approve contributions."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         contribution = self.get_object()
+        if (
+            user.role == "TREASURER"
+            and not user.is_superuser
+            and contribution.group.treasurer_id != user.id
+        ):
+            return Response(
+                {"detail": "You can only approve contributions in your own group."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if contribution.status != "PENDING":
+            return Response(
+                {"detail": "Only pending contributions can be approved."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        paid_date = contribution.reported_paid_date or timezone.now().date()
+        if contribution.is_manual_entry:
+            # Keep approved manual entries marked as paid instead of late/overdue.
+            contribution.due_date = paid_date
+
         contribution.status = "PAID"
-        contribution.paid_date = timezone.now().date()
-        contribution.save()
-        return Response({"status": "Contribution approved"})
+        contribution.paid_date = paid_date
+        contribution.reviewed_by = user
+        contribution.reviewed_at = timezone.now()
+        contribution.save(skip_status_evaluation=True)
+        return Response({"status": "Contribution approved and marked as paid"})
 
     @action(detail=True, methods=["post"])
     def reject(self, request, pk=None):
+        user = request.user
+        if user.role not in ("ADMIN", "TREASURER") and not user.is_superuser:
+            return Response(
+                {"detail": "Only admins and treasurers can reject contributions."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         contribution = self.get_object()
+        if (
+            user.role == "TREASURER"
+            and not user.is_superuser
+            and contribution.group.treasurer_id != user.id
+        ):
+            return Response(
+                {"detail": "You can only reject contributions in your own group."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if contribution.status != "PENDING":
+            return Response(
+                {"detail": "Only pending contributions can be rejected."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         contribution.status = "REJECTED"
-        contribution.save()
+        contribution.paid_date = None
+        contribution.reviewed_by = user
+        contribution.reviewed_at = timezone.now()
+        contribution.save(skip_status_evaluation=True)
         return Response({"status": "Contribution rejected"})
 
 

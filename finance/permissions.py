@@ -25,9 +25,20 @@ class HasFinanceAccess(BasePermission):
             return True
 
         # Group context (POST/PUT or GET)
-        group_id = request.data.get("group") or request.query_params.get("group")
+        group_id = (
+            request.data.get("group")
+            or request.data.get("group_id")
+            or request.query_params.get("group")
+            or request.query_params.get("group_id")
+        )
 
         if not group_id:
+            memberships = Membership.objects.filter(
+                user=user,
+                role__in=["TREASURER", "MEMBER"],
+            ).values_list("group_id", flat=True).distinct()
+            if memberships.count() == 1:
+                return True
             self.message = "Group context is required."
             return False
 

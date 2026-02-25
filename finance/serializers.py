@@ -1,3 +1,5 @@
+from datetime import date
+
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from .models import (
@@ -23,6 +25,98 @@ class ContributionSerializer(serializers.ModelSerializer):
 
     def get_suggested_penalty(self, obj):
         return obj.calculate_suggested_penalty()
+
+
+class ManualContributionProposalSerializer(serializers.Serializer):
+    group_id = serializers.IntegerField(required=False)
+    amount = serializers.DecimalField(max_digits=10, decimal_places=2)
+    reported_paid_date = serializers.DateField(required=False)
+    reported_payment_method = serializers.ChoiceField(
+        choices=Contribution.PAYMENT_METHOD_CHOICES,
+        required=False,
+    )
+    reported_reference = serializers.CharField(
+        max_length=100,
+        required=False,
+        allow_blank=True,
+    )
+    reported_note = serializers.CharField(
+        required=False,
+        allow_blank=True,
+    )
+
+    def validate_amount(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Amount must be greater than zero.")
+        return value
+
+    def validate_reported_paid_date(self, value):
+        if value > date.today():
+            raise serializers.ValidationError(
+                "Reported payment date cannot be in the future."
+            )
+        return value
+
+    def validate(self, attrs):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        group_id = attrs.get("group_id")
+
+        if not user or not user.is_authenticated:
+            raise serializers.ValidationError("Authentication is required.")
+
+        group = None
+        if group_id is None:
+            memberships = Membership.objects.filter(user=user).select_related("group")
+            membership_count = memberships.count()
+            if membership_count == 1:
+                group = memberships.first().group
+            elif membership_count == 0:
+                raise serializers.ValidationError(
+                    {"group_id": "You do not belong to any group."}
+                )
+            else:
+                raise serializers.ValidationError(
+                    {"group_id": "Please select a group for this proposal."}
+                )
+        else:
+            try:
+                group = Group.objects.get(pk=group_id)
+            except Group.DoesNotExist:
+                raise serializers.ValidationError({"group_id": "Group not found."})
+
+        is_admin = user.is_superuser or user.role == "ADMIN"
+        is_group_treasurer = user.role == "TREASURER" and group.treasurer_id == user.id
+        is_member = Membership.objects.filter(user=user, group=group).exists()
+
+        if not (is_admin or is_group_treasurer or is_member):
+            raise serializers.ValidationError(
+                {"group_id": "You are not allowed to submit for this group."}
+            )
+
+        attrs["group_obj"] = group
+        attrs["reported_paid_date"] = attrs.get("reported_paid_date", date.today())
+        return attrs
+
+    def create(self, validated_data):
+        user = validated_data["user"]
+        group = validated_data["group_obj"]
+
+        contribution = Contribution(
+            user=user,
+            group=group,
+            amount=validated_data["amount"],
+            due_date=date.today(),
+            paid_date=None,
+            status="PENDING",
+            is_manual_entry=True,
+            reported_paid_date=validated_data["reported_paid_date"],
+            reported_payment_method=validated_data.get("reported_payment_method", ""),
+            reported_reference=validated_data.get("reported_reference", ""),
+            reported_note=validated_data.get("reported_note", ""),
+        )
+        contribution.save(skip_status_evaluation=True)
+        return contribution
 
 
 class PenaltySerializer(serializers.ModelSerializer):
@@ -253,7 +347,6 @@ class AdminAddContributionSerializer(serializers.Serializer):
         return value
 
     def create(self, validated_data):
-        from datetime import date
         paid_date = validated_data.get('paid_date', date.today())
         user = validated_data["user_obj"]
         group = validated_data["group_obj"]
@@ -266,9 +359,5 @@ class AdminAddContributionSerializer(serializers.Serializer):
             paid_date=paid_date,
             status='PAID',
         )
-        # Skip the auto status evaluation on save by setting status explicitly after
-        contribution.save()
-        # Force status to PAID (save() runs evaluate_status which may override)
-        Contribution.objects.filter(pk=contribution.pk).update(status='PAID')
-        contribution.refresh_from_db()
+        contribution.save(skip_status_evaluation=True)
         return contribution

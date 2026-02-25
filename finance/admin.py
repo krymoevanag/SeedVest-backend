@@ -8,11 +8,14 @@ class ContributionAdmin(admin.ModelAdmin):
         "group",
         "amount",
         "status",
+        "is_manual_entry",
+        "reported_payment_method",
         "due_date",
         "paid_date",
+        "reviewed_by",
         "penalty",
     )
-    list_filter = ("status", "group")
+    list_filter = ("status", "is_manual_entry", "group")
     search_fields = ("user__username", "user__email")
 
 

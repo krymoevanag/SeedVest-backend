@@ -1,10 +1,10 @@
 from django.db.models.signals import post_save
 from django.dispatch import receiver
-from django.conf import settings
-from finance.models import Penalty
+from django.contrib.auth import get_user_model
+from finance.models import Contribution, Penalty
 from .models import Notification
 
-User = settings.AUTH_USER_MODEL
+User = get_user_model()
 
 
 
@@ -17,6 +17,7 @@ def notify_penalty_assigned(sender, instance, created, **kwargs):
             recipient=instance.contribution.user,
             title="Penalty Applied",
             message=f"A penalty of {instance.amount} has been applied to your contribution.",
+            category="SYSTEM",
             type="WARNING",
             link=f"/finance/contributions/{instance.contribution.id}",
         )
@@ -32,6 +33,60 @@ def notify_membership_added(sender, instance, created, **kwargs):
             recipient=instance.user,
             title="Group Membership",
             message=f"You have been added to the group '{instance.group.name}' as {instance.get_role_display()}.",
+            category="SYSTEM",
             type="INFO",
             link=f"/groups/{instance.group.id}",
         )
+
+
+@receiver(post_save, sender=Contribution)
+def notify_manual_contribution_proposed(sender, instance, created, **kwargs):
+    """
+    Alert admins/treasurer when a member submits a manual contribution proposal.
+    """
+    if not created:
+        return
+
+    if not instance.is_manual_entry or instance.status != "PENDING":
+        return
+
+    recipients = list(
+        User.objects.filter(
+            is_active=True,
+            is_approved=True,
+            role="ADMIN",
+        )
+    )
+
+    treasurer = instance.group.treasurer
+    if (
+        treasurer
+        and treasurer.is_active
+        and treasurer.is_approved
+        and all(r.id != treasurer.id for r in recipients)
+    ):
+        recipients.append(treasurer)
+
+    if not recipients:
+        return
+
+    title = "Contribution Proposal Submitted"
+    message = (
+        f"{instance.user.first_name} {instance.user.last_name}".strip()
+        or instance.user.email
+    )
+    notifications = [
+        Notification(
+            recipient=recipient,
+            title=title,
+            message=(
+                f"{message} proposed KES {instance.amount} for "
+                f"{instance.group.name}. Verify in contribution management."
+            ),
+            category="PROPOSAL",
+            type="INFO",
+            link="/governance/contributions",
+        )
+        for recipient in recipients
+    ]
+    Notification.objects.bulk_create(notifications)

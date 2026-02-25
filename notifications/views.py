@@ -1,9 +1,10 @@
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from .models import Notification
-from .serializers import NotificationSerializer
+from .models import Notification, NotificationPreference
+from .serializers import NotificationSerializer, NotificationPreferenceSerializer
 from django.contrib.auth import get_user_model
+from accounts.permissions import IsAdminOrTreasurer
 
 User = get_user_model()
 
@@ -13,11 +14,21 @@ class NotificationViewSet(viewsets.ModelViewSet):
 
     def get_permissions(self):
         if self.action in ["create", "broadcast"]:
-            return [permissions.IsAuthenticated(), permissions.IsAdminUser()]
+            return [permissions.IsAuthenticated(), IsAdminOrTreasurer()]
         return [permissions.IsAuthenticated()]
 
+    def _get_or_create_preference(self):
+        preference, _ = NotificationPreference.objects.get_or_create(
+            user=self.request.user
+        )
+        return preference
+
     def get_queryset(self):
-        return Notification.objects.filter(recipient=self.request.user)
+        queryset = Notification.objects.filter(recipient=self.request.user)
+        preference = self._get_or_create_preference()
+        if preference.mute_internal_messages:
+            queryset = queryset.exclude(category="INTERNAL")
+        return queryset
 
     @action(detail=True, methods=["post"])
     def mark_read(self, request, pk=None):
@@ -32,6 +43,23 @@ class NotificationViewSet(viewsets.ModelViewSet):
         return Response(
             {"status": "all notifications marked as read"}, status=status.HTTP_200_OK
         )
+
+    @action(detail=False, methods=["get", "patch"])
+    def preferences(self, request):
+        preference = self._get_or_create_preference()
+
+        if request.method == "GET":
+            serializer = NotificationPreferenceSerializer(preference)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        serializer = NotificationPreferenceSerializer(
+            preference,
+            data=request.data,
+            partial=True,
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=["post"])
     def broadcast(self, request):
@@ -50,9 +78,14 @@ class NotificationViewSet(viewsets.ModelViewSet):
                 recipient=user,
                 title=title,
                 message=message,
+                category="INTERNAL",
                 type=notif_type,
             )
-            for user in User.objects.filter(is_active=True)
+            for user in User.objects.filter(
+                is_active=True,
+                is_approved=True,
+                role__in=["MEMBER", "TREASURER"],
+            )
         ]
         Notification.objects.bulk_create(notifications)
 
