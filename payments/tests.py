@@ -48,6 +48,40 @@ class MpesaCallbackTests(TestCase):
         self.assertEqual(transaction.amount, 100)
         self.assertEqual(transaction.user, self.user)
 
+    @patch("payments.views.stk_push")
+    def test_initiate_payment_accepts_phone_number_key(self, mock_stk_push):
+        mock_stk_push.return_value = {
+            "MerchantRequestID": "test-merchant-id-2",
+            "CheckoutRequestID": "test-checkout-id-2",
+            "ResponseCode": "0",
+            "ResponseDescription": "Success",
+            "CustomerMessage": "Success"
+        }
+
+        payload = {
+            "phone_number": "0708873060",
+            "amount": 50
+        }
+
+        response = self.client.post(self.payment_url, payload)
+
+        self.assertEqual(response.status_code, 200)
+        mock_stk_push.assert_called_once_with("254708873060", 50)
+        self.assertTrue(
+            MpesaTransaction.objects.filter(
+                checkout_request_id="test-checkout-id-2"
+            ).exists()
+        )
+
+    def test_initiate_payment_rejects_invalid_phone(self):
+        payload = {
+            "phone_number": "12345",
+            "amount": 50
+        }
+        response = self.client.post(self.payment_url, payload)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("error", response.data)
+
     def test_callback_updates_transaction_success(self):
         # Create a pending transaction
         transaction = MpesaTransaction.objects.create(

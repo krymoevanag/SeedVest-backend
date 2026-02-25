@@ -12,18 +12,54 @@ from .models import MpesaTransaction
 from .services.stk_push import stk_push
 from .services.query_status import query_stk_status
 from finance.models import Contribution
+from decimal import Decimal, InvalidOperation
 
 logger = logging.getLogger(__name__)
 
 
 class InitiateMpesaPaymentView(APIView):
+    @staticmethod
+    def _normalize_phone(phone: str) -> str:
+        cleaned = str(phone).strip().replace(" ", "")
+        if cleaned.startswith("+254"):
+            cleaned = cleaned[1:]
+        elif cleaned.startswith("0") and len(cleaned) == 10:
+            cleaned = f"254{cleaned[1:]}"
+        return cleaned
+
     def post(self, request):
         logger.info(f"--- M-PESA PAYMENT INITIATE ATTEMPT ---")
-        phone = request.data.get("phone")
+        # Accept both keys for backward compatibility with older mobile builds
+        raw_phone = request.data.get("phone") or request.data.get("phone_number")
         amount = request.data.get("amount")
         contribution_id = request.data.get("contribution_id")
 
-        logger.info(f"Phone: {phone}, Amount: {amount}, Contribution ID: {contribution_id}")
+        logger.info(
+            f"Phone(raw): {raw_phone}, Amount: {amount}, Contribution ID: {contribution_id}"
+        )
+
+        if not raw_phone:
+            return Response(
+                {"error": "Phone number is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        phone = self._normalize_phone(raw_phone)
+        if not phone.startswith("2547") or len(phone) != 12 or not phone.isdigit():
+            return Response(
+                {"error": "Use a valid Safaricom number in format 2547XXXXXXXX."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            amount_decimal = Decimal(str(amount))
+            if amount_decimal <= 0:
+                raise InvalidOperation
+        except (InvalidOperation, TypeError, ValueError):
+            return Response(
+                {"error": "Amount must be a positive number."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         # Associate with user if authenticated
         user = request.user if request.user.is_authenticated else None
@@ -37,7 +73,8 @@ class InitiateMpesaPaymentView(APIView):
                 pass
 
         try:
-            response = stk_push(phone, amount)
+            # Safaricom expects integer amount in KES
+            response = stk_push(phone, int(amount_decimal))
             logger.info(f"Safaricom Response: {json.dumps(response, indent=4)}")
         except Exception as e:
             logger.error(f"Error initiating STK Push: {str(e)}")
@@ -48,7 +85,7 @@ class InitiateMpesaPaymentView(APIView):
                 user=user,
                 contribution=contribution,
                 phone_number=phone,
-                amount=amount,
+                amount=amount_decimal,
                 checkout_request_id=response["CheckoutRequestID"],
                 merchant_request_id=response["MerchantRequestID"],
             )
