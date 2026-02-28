@@ -1,4 +1,4 @@
-from django.contrib.auth import get_user_model, authenticate
+﻿from django.contrib.auth import get_user_model, authenticate
 from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.urls import reverse
@@ -12,9 +12,11 @@ from rest_framework import serializers
 
 from django.db import transaction
 from django.db.models import Sum
-from .emails import send_activation_email
+from .emails import send_activation_email, send_welcome_email
 from .models import AuditLog
 from .tokens import account_activation_token
+from groups.models import Group, Membership
+from django.conf import settings
 
 User = get_user_model()
 
@@ -174,6 +176,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
     full_name = serializers.SerializerMethodField()
     total_savings = serializers.SerializerMethodField()
     total_penalties = serializers.SerializerMethodField()
+    group_ids = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -192,6 +195,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             "profile_picture",
             "total_savings",
             "total_penalties",
+            "group_ids",
         )
         read_only_fields = (
             "id",
@@ -204,6 +208,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             "is_approved",
             "total_savings",
             "total_penalties",
+            "group_ids",
         )
 
     def get_full_name(self, obj):
@@ -241,6 +246,9 @@ class UserProfileSerializer(serializers.ModelSerializer):
             or 0.0
         )
         return float(paid_penalties) + float(standalone_penalties)
+
+    def get_group_ids(self, obj):
+        return list(obj.membership_set.values_list("group_id", flat=True))
 
 
 class ChangePasswordSerializer(serializers.Serializer):

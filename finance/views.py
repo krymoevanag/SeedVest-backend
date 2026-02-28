@@ -1,9 +1,10 @@
-from rest_framework import serializers, status, viewsets
+from rest_framework import serializers, status, viewsets, filters
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.generics import ListAPIView
 from django.utils import timezone
 
 from accounts.permissions import IsApprovedUser
@@ -17,6 +18,8 @@ from .serializers import (
     SavingsTargetSerializer,
     InvestmentSerializer,
     AdminAddContributionSerializer,
+    AdminResetMemberFinanceSerializer,
+    AdminMemberListSerializer,
 )
 
 
@@ -131,8 +134,32 @@ class ContributionViewSet(viewsets.ModelViewSet):
         contribution.save(skip_status_evaluation=True)
         return Response({"status": "Contribution rejected"})
 
+    def destroy(self, request, *args, **kwargs):
+        user = request.user
+        contribution = self.get_object()
+
+        if user.role not in ("ADMIN", "TREASURER") and not user.is_superuser:
+            return Response(
+                {"detail": "Only admins and treasurers can delete contributions."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if (
+            user.role == "TREASURER"
+            and not user.is_superuser
+            and contribution.group.treasurer_id != user.id
+        ):
+            return Response(
+                {"detail": "You can only delete contributions in your own group."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        self.perform_destroy(contribution)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
 
 class PenaltyViewSet(viewsets.ModelViewSet):
+    serializer_class = PenaltySerializer
     def get_queryset(self):
         user = self.request.user
 
@@ -148,7 +175,7 @@ class PenaltyViewSet(viewsets.ModelViewSet):
             ).distinct()
 
         if user.role == "MEMBER":
-            return Penalty.objects.filter(user=user)
+            return Penalty.objects.filter(user=user, is_archived=False)
 
         return Penalty.objects.none()
 
@@ -168,11 +195,14 @@ class PenaltyViewSet(viewsets.ModelViewSet):
         if actor.role == "TREASURER":
             if contribution and contribution.group.treasurer != actor:
                 raise PermissionDenied("Not your group's contribution.")
-            # If no contribution, check if target_user is in actor's group
-            elif not contribution and target_user:
                 from groups.models import Membership
                 if not Membership.objects.filter(user=target_user, group__treasurer=actor).exists():
                     raise PermissionDenied("User is not in your group.")
+            elif target_user:
+                # General role check for treasurer targeting users
+                from groups.models import Membership
+                if not Membership.objects.filter(user=target_user, group__treasurer=actor).exists():
+                    raise PermissionDenied("You can only penalize users within your own group.")
 
         if actor.role not in ["ADMIN", "TREASURER"]:
             raise PermissionDenied("Only Admins and Treasurers can create penalties.")
@@ -218,7 +248,7 @@ class AutoSavingConfigViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsApprovedUser]
 
     def get_queryset(self):
-        return AutoSavingConfig.objects.filter(user=self.request.user)
+        return AutoSavingConfig.objects.filter(user=self.request.user, is_archived=False)
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
@@ -303,3 +333,142 @@ class AdminAddContributionView(APIView):
                 status=status.HTTP_201_CREATED,
             )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class AdminResetMemberFinanceView(APIView):
+    """
+    Resets a member's financial history after withdrawals are settled.
+    This clears contributions and penalties while keeping the user profile.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        actor = request.user
+        if actor.role != "ADMIN" and not actor.is_superuser:
+            return Response(
+                {"detail": "Only admins can reset member financial accounts."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = AdminResetMemberFinanceSerializer(
+            data=request.data,
+            context={"request": request},
+        )
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        target_user = serializer.validated_data["user_obj"]
+        reset_account_status = serializer.validated_data.get(
+            "reset_account_status",
+            False,
+        )
+
+        contribution_count = Contribution.objects.filter(user=target_user).count()
+        standalone_penalty_count = Penalty.objects.filter(
+            user=target_user,
+            contribution__isnull=True,
+        ).count()
+
+        Contribution.objects.filter(user=target_user).delete()
+        Penalty.objects.filter(
+            user=target_user,
+            contribution__isnull=True,
+        ).delete()
+
+        if reset_account_status:
+            target_user.is_approved = False
+            target_user.application_status = "UNDER_REVIEW"
+            target_user.membership_number = None
+            target_user.save(
+                update_fields=[
+                    "is_approved",
+                    "application_status",
+                    "membership_number",
+                ]
+            )
+
+        from accounts.models import AuditLog
+
+        AuditLog.objects.create(
+            actor=actor,
+            target_user=target_user,
+            action="DEACTIVATION",
+            notes=(
+                "Financial account reset. "
+                f"Deleted contributions: {contribution_count}, "
+                f"standalone penalties: {standalone_penalty_count}, "
+                f"reset_account_status: {str(reset_account_status).lower()}."
+            ),
+        )
+
+        return Response(
+            {
+                "detail": "Member financial account has been reset.",
+                "deleted_contributions": contribution_count,
+                "deleted_standalone_penalties": standalone_penalty_count,
+                "account_status_reset": reset_account_status,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class AdminMemberListView(ListAPIView):
+    """
+    Lists all approved members with their financial summary (e.g. total penalties).
+    """
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = AdminMemberListSerializer
+    filter_backends = [filters.SearchFilter]
+    search_fields = ["email", "first_name", "last_name"]
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.role not in ("ADMIN", "TREASURER") and not user.is_superuser:
+            raise PermissionDenied("Only admins and treasurers can view this list.")
+
+        return User.objects.filter(role="MEMBER", is_approved=True)
+
+
+from .report_service import ReportService
+
+class FinancialReportView(APIView):
+    """
+    Provides monthly financial summary reports for admins and treasurers.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        if user.role not in ("ADMIN", "TREASURER") and not user.is_superuser:
+            return Response(
+                {"detail": "Only admins and treasurers can access reports."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        group_id = request.query_params.get("group_id")
+        month_str = request.query_params.get("month", str(timezone.now().month))
+        year_str = request.query_params.get("year", str(timezone.now().year))
+        
+        try:
+            month = int(month_str)
+            year = int(year_str)
+        except ValueError:
+            return Response({"detail": "Invalid month or year."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not group_id:
+            return Response({"detail": "group_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Treasurer check
+        if user.role == "TREASURER" and not user.is_superuser:
+            from groups.models import Group
+            try:
+                group = Group.objects.get(pk=group_id)
+                if group.treasurer_id != user.id:
+                    return Response({"detail": "You can only view reports for your own group."}, status=status.HTTP_403_FORBIDDEN)
+            except Group.DoesNotExist:
+                return Response({"detail": "Group not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        summary = ReportService.get_monthly_summary(group_id, year, month)
+        return Response(summary)

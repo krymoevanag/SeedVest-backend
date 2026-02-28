@@ -8,6 +8,9 @@ from .views import (
     SavingsTargetViewSet,
     InvestmentViewSet,
     AdminAddContributionView,
+    AdminResetMemberFinanceView,
+    AdminMemberListView,
+    FinancialReportView,
 )
 
 # Create a DRF router and register the ViewSets
@@ -23,4 +26,15 @@ urlpatterns = [
     path("", include(router.urls)),
     path("insights/", FinancialInsightsView.as_view(), name="financial-insights"),
     path("admin-add-contribution/", AdminAddContributionView.as_view(), name="admin-add-contribution"),
+    path(
+        "admin-reset-member-finance/",
+        AdminResetMemberFinanceView.as_view(),
+        name="admin-reset-member-finance",
+    ),
+    path(
+        "admin-member-list/",
+        AdminMemberListView.as_view(),
+        name="admin-member-list",
+    ),
+    path("reports/summary/", FinancialReportView.as_view(), name="financial-report-summary"),
 ]

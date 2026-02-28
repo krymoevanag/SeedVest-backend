@@ -13,20 +13,27 @@ User = get_user_model()
 @receiver(post_save, sender=Penalty)
 def notify_penalty_assigned(sender, instance, created, **kwargs):
     if created:
+        recipient = instance.user
+        if not recipient and instance.contribution:
+            recipient = instance.contribution.user
+            
+        if not recipient:
+            return
+
+        link = "/finance/penalties/"
+        if instance.contribution:
+            link = f"/finance/contributions/{instance.contribution.id}"
+
         Notification.objects.create(
-            recipient=instance.contribution.user,
+            recipient=recipient,
             title="Penalty Applied",
-            message=f"A penalty of {instance.amount} has been applied to your contribution.",
+            message=f"A penalty of {instance.amount} has been applied to your account.",
             category="SYSTEM",
-            type="WARNING",
-            link=f"/finance/contributions/{instance.contribution.id}",
+            link=link,
         )
 
 
 from groups.models import Membership
-
-
-@receiver(post_save, sender=Membership)
 def notify_membership_added(sender, instance, created, **kwargs):
     if created:
         Notification.objects.create(

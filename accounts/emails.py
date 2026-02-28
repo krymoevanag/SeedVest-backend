@@ -118,3 +118,28 @@ SeedVest Team
         [user.email],
         fail_silently=False,
     )
+def send_welcome_email(email, password, login_link):
+    subject = "Welcome to SeedVest - Your Account Details"
+    message = f"""
+Dear Member,
+
+Your account on SeedVest has been created by an administrator.
+
+You can log in using the following credentials:
+Email: {email}
+Temporary Password: {password}
+
+Login Link: {login_link}
+
+For security reasons, please change your password immediately after your first login.
+
+Best regards,
+SeedVest Team
+"""
+    send_mail(
+        subject,
+        message,
+        settings.DEFAULT_FROM_EMAIL,
+        [email],
+        fail_silently=False,
+    )

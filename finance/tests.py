@@ -7,7 +7,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import get_user_model
 
 from groups.models import Group, Membership
-from .models import Contribution
+from .models import Contribution, Penalty
 
 User = get_user_model()
 
@@ -219,3 +219,63 @@ class AdminAddContributionTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
         contribution.refresh_from_db()
         self.assertEqual(contribution.status, "PENDING")
+
+    def test_member_cannot_delete_contribution(self):
+        contribution = Contribution.objects.create(
+            user=self.member,
+            group=self.group,
+            amount="1200.00",
+            due_date=date.today(),
+            status="PAID",
+            paid_date=date.today(),
+        )
+
+        member_refresh = RefreshToken.for_user(self.member)
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f"Bearer {member_refresh.access_token}"
+        )
+
+        response = self.client.delete(
+            reverse("contribution-detail", args=[contribution.id]),
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(Contribution.objects.filter(id=contribution.id).exists())
+
+    def test_admin_can_reset_member_financial_account(self):
+        Contribution.objects.create(
+            user=self.member,
+            group=self.group,
+            amount="1800.00",
+            due_date=date.today(),
+            status="PAID",
+            paid_date=date.today(),
+        )
+        Penalty.objects.create(
+            user=self.member,
+            amount="100.00",
+            reason="Standalone penalty",
+            applied_by=self.admin,
+        )
+
+        url = reverse("admin-reset-member-finance")
+        response = self.client.post(
+            url,
+            {
+                "user_id": self.member.id,
+                "reset_account_status": False,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["deleted_contributions"], 1)
+        self.assertEqual(response.data["deleted_standalone_penalties"], 1)
+        self.assertEqual(
+            Contribution.objects.filter(user=self.member).count(),
+            0,
+        )
+        self.assertEqual(
+            Penalty.objects.filter(user=self.member).count(),
+            0,
+        )

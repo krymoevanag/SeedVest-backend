@@ -587,6 +587,11 @@ class AdminStatsView(APIView):
 
     def get(self, request):
         total_users = User.objects.count()
+        total_members = User.objects.filter(
+            role="MEMBER",
+            is_approved=True,
+            is_active=True,
+        ).count()
         pending_approvals = User.objects.filter(is_approved=False).count()
 
         # Total Savings (Base amount paid)
@@ -620,6 +625,7 @@ class AdminStatsView(APIView):
         return Response(
             {
                 "total_users": total_users,
+                "total_members": total_members,
                 "pending_approvals": pending_approvals,
                 "total_savings": total_savings,
                 "total_penalties": total_penalties,

@@ -1,5 +1,6 @@
 from datetime import date
-
+from django.db.models import Sum
+from decimal import Decimal
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from .models import (
@@ -361,3 +362,44 @@ class AdminAddContributionSerializer(serializers.Serializer):
         )
         contribution.save(skip_status_evaluation=True)
         return contribution
+
+
+class AdminResetMemberFinanceSerializer(serializers.Serializer):
+    user_id = serializers.IntegerField()
+    reset_account_status = serializers.BooleanField(required=False, default=False)
+
+    def validate_user_id(self, value):
+        try:
+            user = User.objects.get(pk=value)
+        except User.DoesNotExist:
+            raise serializers.ValidationError("User not found.")
+        return user.id
+
+    def validate(self, attrs):
+        attrs["user_obj"] = User.objects.get(pk=attrs["user_id"])
+        return attrs
+
+
+class AdminMemberListSerializer(serializers.ModelSerializer):
+    full_name = serializers.SerializerMethodField()
+    total_penalties = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = [
+            "id",
+            "email",
+            "full_name",
+            "role",
+            "is_approved",
+            "total_penalties",
+        ]
+
+    def get_full_name(self, obj):
+        return f"{obj.first_name} {obj.last_name}".strip()
+
+    def get_total_penalties(self, obj):
+        total = obj.penalties.aggregate(
+            total=Sum("amount")
+        )["total"]
+        return total or Decimal("0.00")

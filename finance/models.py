@@ -48,7 +48,8 @@ class Penalty(models.Model):
 
     def __str__(self):
         return f"Penalty {self.amount} on {self.contribution or self.user}"
-
+    
+    is_archived = models.BooleanField(default=False)
 
 # =========================
 # Contribution Model
@@ -250,6 +251,7 @@ class AutoSavingConfig(models.Model):
             )
         if not (1 <= self.day_of_month <= 28):
             raise ValidationError("Day of month must be between 1 and 28")
+    is_archived = models.BooleanField(default=False)
 
 
 # =========================
