@@ -70,21 +70,28 @@ class User(AbstractUser):
 
     def generate_membership_number(self):
         from datetime import datetime
+        import re
         year = datetime.now().year
-        last_member = User.objects.filter(
-            membership_number__isnull=False
-        ).order_by("-id").first()
-
-        if last_member and last_member.membership_number:
-            try:
-                # Expecting format MBR-YYYY-XXXX
-                last_number = int(last_member.membership_number.split("-")[-1])
-                new_number = last_number + 1
-            except (ValueError, IndexError):
-                new_number = 1
-        else:
-            new_number = 1
-
+        pattern = rf"^MBR-{year}-(\d{{4}})$"
+        
+        # Get all membership numbers for the current year
+        members_this_year = User.objects.filter(
+            membership_number__startswith=f"MBR-{year}-"
+        ).values_list('membership_number', flat=True)
+        
+        max_num = 0
+        for num in members_this_year:
+            if num:
+                match = re.match(pattern, num)
+                if match:
+                    try:
+                        val = int(match.group(1))
+                        if val > max_num:
+                            max_num = val
+                    except ValueError:
+                        continue
+        
+        new_number = max_num + 1
         return f"MBR-{year}-{new_number:04d}"
 
     def __str__(self):
@@ -99,6 +106,8 @@ class AuditLog(models.Model):
         ("LOGIN", "Login"),
         ("PASSWORD_RESET", "Password Reset"),
         ("ROLE_CHANGE", "Role Change"),
+        ("CONTRIBUTION_ADD", "Contribution Add"),
+        ("PENALTY_ISSUE", "Penalty Issue"),
     )
 
     actor = models.ForeignKey(

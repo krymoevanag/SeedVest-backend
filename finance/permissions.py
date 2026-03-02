@@ -12,17 +12,17 @@ class HasFinanceAccess(BasePermission):
     def has_permission(self, request, view):
         user = request.user
 
-        # Must be authenticated and approved
-        if (
-            not user
-            or not user.is_authenticated
-            or not getattr(user, "is_approved", False)
-        ):
+        # Must be authenticated
+        if not user or not user.is_authenticated:
             return False
 
-        # ADMIN bypass
-        if user.role == "ADMIN":
+        # Admin and Superuser bypass is_approved and group context check
+        if user.is_superuser or user.role == "ADMIN":
             return True
+
+        # Member/Treasurer must be approved
+        if not getattr(user, "is_approved", False):
+            return False
 
         # Group context (POST/PUT or GET)
         group_id = (

@@ -10,7 +10,10 @@ from .views import (
     AdminAddContributionView,
     AdminResetMemberFinanceView,
     AdminMemberListView,
+    AdminGroupSummaryView,
     FinancialReportView,
+    TriggerAutoSaveView,
+    AutoSavingGenerationHistoryView,
 )
 
 # Create a DRF router and register the ViewSets
@@ -36,5 +39,12 @@ urlpatterns = [
         AdminMemberListView.as_view(),
         name="admin-member-list",
     ),
+    path(
+        "admin-group-summary/",
+        AdminGroupSummaryView.as_view(),
+        name="admin-group-summary",
+    ),
     path("reports/summary/", FinancialReportView.as_view(), name="financial-report-summary"),
+    path("trigger-auto-save/", TriggerAutoSaveView.as_view(), name="trigger-auto-save"),
+    path("auto-save-history/", AutoSavingGenerationHistoryView.as_view(), name="auto-save-history"),
 ]

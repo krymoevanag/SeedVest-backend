@@ -1,8 +1,11 @@
-from django.urls import path
-from .views import GroupCreateView, GroupListView
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+from .views import GroupViewSet, MembershipViewSet
+
+router = DefaultRouter()
+router.register(r'groups', GroupViewSet, basename='group')
+router.register(r'memberships', MembershipViewSet, basename='membership')
 
 urlpatterns = [
-    path('groups/', GroupListView.as_view(), name='list-groups'),
-    path('', GroupListView.as_view(), name='list-groups-root'),
-    path('create/', GroupCreateView.as_view(), name='create-group'),
+    path('', include(router.urls)),
 ]

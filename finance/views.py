@@ -1,3 +1,7 @@
+from django.db import models, transaction
+from django.db.models import Sum, Q, Value, Count, F
+from django.db.models.functions import Coalesce
+from decimal import Decimal
 from rest_framework import serializers, status, viewsets, filters
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
@@ -8,7 +12,8 @@ from rest_framework.generics import ListAPIView
 from django.utils import timezone
 
 from accounts.permissions import IsApprovedUser
-from finance.permissions import HasFinanceAccess, PenaltyPermission
+from finance.permissions import HasFinanceAccess, PenaltyPermission, IsTreasurerOrAdmin
+from groups.models import Group, Membership
 from .models import Contribution, Penalty, AutoSavingConfig, SavingsTarget, Investment
 from .serializers import (
     ContributionSerializer,
@@ -20,7 +25,10 @@ from .serializers import (
     AdminAddContributionSerializer,
     AdminResetMemberFinanceSerializer,
     AdminMemberListSerializer,
+    AdminMembershipSerializer,
+    MonthlySavingGenerationSerializer,
 )
+from .services import InsightService, AutoSaveService
 
 
 class ContributionViewSet(viewsets.ModelViewSet):
@@ -220,7 +228,22 @@ class PenaltyViewSet(viewsets.ModelViewSet):
             contribution.penalty = Decimal(str(amount))
             contribution.save()
 
-        serializer.save(amount=amount, applied_by=actor, user=target_user)
+        from django.db import transaction
+        from accounts.models import AuditLog
+
+        with transaction.atomic():
+            penalty = serializer.save(amount=amount, applied_by=actor, user=target_user)
+            
+            # Audit Logging
+            AuditLog.objects.create(
+                actor=actor,
+                target_user=target_user,
+                action="PENALTY_ISSUE",
+                notes=(
+                    f"Issued penalty of {amount} for group '{penalty.contribution.group.name if penalty.contribution else 'N/A'}'. "
+                    f"Reason: {penalty.reason}"
+                )
+            )
 
 
 from .services import InsightService
@@ -327,7 +350,23 @@ class AdminAddContributionView(APIView):
             context={"request": request},
         )
         if serializer.is_valid():
-            contribution = serializer.save()
+            from django.db import transaction
+            from accounts.models import AuditLog
+
+            with transaction.atomic():
+                contribution = serializer.save()
+                
+                # Audit Logging
+                AuditLog.objects.create(
+                    actor=user,
+                    target_user=contribution.user,
+                    action="CONTRIBUTION_ADD",
+                    notes=(
+                        f"Added contribution of {contribution.amount} "
+                        f"to group '{contribution.group.name}'."
+                    )
+                )
+
             return Response(
                 ContributionSerializer(contribution).data,
                 status=status.HTTP_201_CREATED,
@@ -364,11 +403,11 @@ class AdminResetMemberFinanceView(APIView):
             False,
         )
 
-        contribution_count = Contribution.objects.filter(user=target_user).count()
-        standalone_penalty_count = Penalty.objects.filter(
-            user=target_user,
-            contribution__isnull=True,
-        ).count()
+        from .report_service import ReportService
+        reset_report = ReportService.get_user_reset_report(target_user)
+
+        contribution_count = reset_report["contribution_count"]
+        standalone_penalty_count = reset_report["standalone_penalty_count"]
 
         Contribution.objects.filter(user=target_user).delete()
         Penalty.objects.filter(
@@ -408,6 +447,7 @@ class AdminResetMemberFinanceView(APIView):
                 "deleted_contributions": contribution_count,
                 "deleted_standalone_penalties": standalone_penalty_count,
                 "account_status_reset": reset_account_status,
+                "reset_report": reset_report,
             },
             status=status.HTTP_200_OK,
         )
@@ -415,20 +455,112 @@ class AdminResetMemberFinanceView(APIView):
 
 class AdminMemberListView(ListAPIView):
     """
-    Lists all approved members with their financial summary (e.g. total penalties).
+    Lists all memberships with their financial summary (e.g. total savings/penalties).
+    Correctly scopes finances per membership.
     """
 
     permission_classes = [IsAuthenticated]
-    serializer_class = AdminMemberListSerializer
+    serializer_class = AdminMembershipSerializer
     filter_backends = [filters.SearchFilter]
-    search_fields = ["email", "first_name", "last_name"]
+    search_fields = [
+        "user__email", 
+        "user__first_name", 
+        "user__last_name", 
+        "user__membership_number",
+        "group__name"
+    ]
 
     def get_queryset(self):
         user = self.request.user
         if user.role not in ("ADMIN", "TREASURER") and not user.is_superuser:
             raise PermissionDenied("Only admins and treasurers can view this list.")
 
-        return User.objects.filter(role="MEMBER", is_approved=True)
+        queryset = Membership.objects.all().select_related("user", "group")
+
+        # Role-based filtering
+        if not user.is_superuser and user.role != "ADMIN":
+            if user.role == "TREASURER":
+                queryset = queryset.filter(group__treasurer=user)
+            else:
+                queryset = Membership.objects.none()
+
+        # Group filtering
+        group_id = self.request.query_params.get("group_id")
+        if group_id:
+            queryset = queryset.filter(group_id=group_id)
+
+        # Optimization: Aggregate group-specific balances in one query
+        queryset = queryset.annotate(
+            savings_balance=Coalesce(
+                Sum(
+                    "group__finance_contributions__amount",
+                    filter=Q(
+                        group__finance_contributions__user=F("user"),
+                        group__finance_contributions__status__in=["PAID", "LATE"]
+                    )
+                ),
+                Value(0, output_field=models.DecimalField())
+            ),
+            penalties_balance=Coalesce(
+                Sum(
+                    "user__penalties__amount",
+                    filter=Q(
+                        user__penalties__contribution__group=F("group"),
+                        user__penalties__is_archived=False
+                    )
+                ),
+                Value(0, output_field=models.DecimalField())
+            )
+        )
+
+        return queryset
+
+
+class AdminGroupSummaryView(APIView):
+    """
+    Returns summary statistics for a specific group.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        group_id = request.query_params.get("group_id")
+
+        if not group_id:
+            return Response({"detail": "group_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            group = Group.objects.get(pk=group_id)
+        except Group.DoesNotExist:
+            return Response({"detail": "Group not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Permission check
+        if not user.is_superuser and user.role != "ADMIN":
+            if user.role == "TREASURER" and group.treasurer_id != user.id:
+                return Response({"detail": "Access denied."}, status=status.HTTP_403_FORBIDDEN)
+            if user.role == "MEMBER":
+                 return Response({"detail": "Access denied."}, status=status.HTTP_403_FORBIDDEN)
+
+        stats = Membership.objects.filter(group=group).aggregate(
+            member_count=Count("id"),
+            total_savings=Coalesce(
+                Sum(
+                    "group__finance_contributions__amount",
+                    filter=Q(group__finance_contributions__status__in=["PAID", "LATE"])
+                ),
+                Value(0, output_field=models.DecimalField())
+            ),
+            total_penalties=Coalesce(
+                Sum("user__penalties__amount", filter=Q(user__penalties__is_archived=False)),
+                Value(0, output_field=models.DecimalField())
+            )
+        )
+
+        return Response({
+            "group_id": group.id,
+            "group_name": group.name,
+            "stats": stats
+        })
 
 
 from .report_service import ReportService
@@ -462,7 +594,6 @@ class FinancialReportView(APIView):
 
         # Treasurer check
         if user.role == "TREASURER" and not user.is_superuser:
-            from groups.models import Group
             try:
                 group = Group.objects.get(pk=group_id)
                 if group.treasurer_id != user.id:
@@ -472,3 +603,46 @@ class FinancialReportView(APIView):
 
         summary = ReportService.get_monthly_summary(group_id, year, month)
         return Response(summary)
+
+
+class TriggerAutoSaveView(APIView):
+    """
+    Allows admins and treasurers to manually trigger auto-save generation or compliance enforcement.
+    """
+    permission_classes = [IsAuthenticated, IsTreasurerOrAdmin]
+
+    def post(self, request):
+        action = request.data.get("action", "generate") # 'generate' or 'enforce'
+        dry_run = request.data.get("dry_run", False)
+
+        if action == "generate":
+            created, skipped, errors = AutoSaveService.generate_contributions(dry_run=dry_run)
+            return Response({
+                "message": "Contribution generation complete.",
+                "created": created,
+                "skipped": skipped,
+                "errors": errors
+            })
+        elif action == "enforce":
+            penalties, errors = AutoSaveService.enforce_savings_compliance(dry_run=dry_run, force=True)
+            return Response({
+                "message": "Compliance enforcement complete.",
+                "penalties_issued": penalties,
+                "errors": errors
+            })
+        
+        return Response({"detail": "Invalid action."}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class AutoSavingGenerationHistoryView(ListAPIView):
+    """
+    Returns a history of auto-save generations.
+    """
+    serializer_class = MonthlySavingGenerationSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.role in ("ADMIN", "TREASURER") or user.is_superuser:
+            return MonthlySavingGeneration.objects.all().order_by("-created_at")
+        return MonthlySavingGeneration.objects.filter(config__user=user).order_by("-created_at")

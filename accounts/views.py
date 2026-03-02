@@ -213,7 +213,7 @@ class UserViewSet(viewsets.ModelViewSet):
             )
         )
 
-        # If accessing the list (e.g., for role management), filter by approval if requested
+        # If accessing the list (e.g., for member management), filter by approval if requested
         if self.action == 'list' and self.request.query_params.get('approved_only') == 'true':
             queryset = queryset.filter(is_approved=True)
             
@@ -410,7 +410,7 @@ class UserViewSet(viewsets.ModelViewSet):
             status=status.HTTP_200_OK,
         )
 
-    @action(detail=False, methods=["get", "patch", "put"])
+    @action(detail=False, methods=["get", "patch", "put"], permission_classes=[IsAuthenticated])
     def me(self, request):
         user = request.user
 
@@ -442,11 +442,11 @@ class PendingUsersView(ListAPIView):
     def get_queryset(self):
         user = self.request.user
         if user.is_superuser or user.role == "ADMIN":
-            return User.objects.filter(is_approved=False)
+            return User.objects.filter(is_approved=False, is_active=True)
         
-        # Treasurers see pending users in their scope (placeholder)
+        # Treasurers see pending users in their scope
         if user.role == "TREASURER":
-            return User.objects.filter(is_approved=False)
+            return User.objects.filter(is_approved=False, is_active=True)
             
         return User.objects.none()
 
@@ -491,8 +491,13 @@ class PasswordResetRequestView(APIView):
         email_message.attach_alternative(html_content, "text/html")
 
         print("Sending email...")
-        email_message.send(fail_silently=False)
-        print("Email sent successfully.")
+        try:
+            email_message.send(fail_silently=True)
+            print("Email sent successfully.")
+        except Exception as e:
+            print(f"Error sending reset email: {e}")
+            # We don't raise the error here to avoid a 500 response.
+            # The reset link is already printed above for development.
 
         return Response(
             {"detail": "If an account exists, a reset email has been sent."},
@@ -586,13 +591,21 @@ class AdminStatsView(APIView):
     permission_classes = [IsAuthenticated, IsAdminOrTreasurer]
 
     def get(self, request):
-        total_users = User.objects.count()
+        # Total Approved Members (including inactive ones)
+        total_users = User.objects.filter(
+            is_approved=True,
+            role__in=["MEMBER", "TREASURER"]
+        ).count()
+
         total_members = User.objects.filter(
             role="MEMBER",
             is_approved=True,
-            is_active=True,
         ).count()
-        pending_approvals = User.objects.filter(is_approved=False).count()
+
+        # Only count those who aren't approved yet
+        pending_approvals = User.objects.filter(
+            is_approved=False
+        ).count()
 
         # Total Savings (Base amount paid)
         total_savings = (

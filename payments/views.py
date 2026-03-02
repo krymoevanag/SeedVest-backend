@@ -33,9 +33,10 @@ class InitiateMpesaPaymentView(APIView):
         raw_phone = request.data.get("phone") or request.data.get("phone_number")
         amount = request.data.get("amount")
         contribution_id = request.data.get("contribution_id")
+        group_id = request.data.get("group_id")
 
         logger.info(
-            f"Phone(raw): {raw_phone}, Amount: {amount}, Contribution ID: {contribution_id}"
+            f"Phone(raw): {raw_phone}, Amount: {amount}, Contribution ID: {contribution_id}, Group ID: {group_id}"
         )
 
         if not raw_phone:
@@ -72,6 +73,15 @@ class InitiateMpesaPaymentView(APIView):
                 logger.warning(f"Contribution with ID {contribution_id} not found.")
                 pass
 
+        group = None
+        if group_id:
+            try:
+                from groups.models import Group
+                group = Group.objects.get(id=group_id)
+            except Group.DoesNotExist:
+                logger.warning(f"Group with ID {group_id} not found.")
+                pass
+
         try:
             # Safaricom expects integer amount in KES
             response = stk_push(phone, int(amount_decimal))
@@ -84,6 +94,7 @@ class InitiateMpesaPaymentView(APIView):
             transaction = MpesaTransaction.objects.create(
                 user=user,
                 contribution=contribution,
+                group=group,
                 phone_number=phone,
                 amount=amount_decimal,
                 checkout_request_id=response["CheckoutRequestID"],

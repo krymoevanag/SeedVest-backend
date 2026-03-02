@@ -19,7 +19,7 @@ If you didn’t register, ignore this email.
         message,
         settings.DEFAULT_FROM_EMAIL,
         [email],
-        fail_silently=False,
+        fail_silently=True,
     )
 
 
@@ -40,7 +40,7 @@ If you did not request this, please ignore this email.
         message,
         settings.DEFAULT_FROM_EMAIL,
         [email],
-        fail_silently=False,
+        fail_silently=True,
     )
 
 
@@ -67,7 +67,7 @@ SeedVest Team
         message,
         settings.DEFAULT_FROM_EMAIL,
         [user.email],
-        fail_silently=False,
+        fail_silently=True,
     )
 
 
@@ -93,7 +93,7 @@ SeedVest Team
         message,
         settings.DEFAULT_FROM_EMAIL,
         [user.email],
-        fail_silently=False,
+        fail_silently=True,
     )
 
 
@@ -116,7 +116,7 @@ SeedVest Team
         message,
         settings.DEFAULT_FROM_EMAIL,
         [user.email],
-        fail_silently=False,
+        fail_silently=True,
     )
 def send_welcome_email(email, password, login_link):
     subject = "Welcome to SeedVest - Your Account Details"
@@ -141,5 +141,29 @@ SeedVest Team
         message,
         settings.DEFAULT_FROM_EMAIL,
         [email],
-        fail_silently=False,
+        fail_silently=True,
+    )
+
+
+def send_penalty_notification_email(user, amount, group_name, reason):
+    subject = f"Penalty Issued - {group_name}"
+    message = f"""
+Dear {user.first_name},
+
+This is to notify you that a penalty has been issued to your account for {group_name}.
+
+Amount: KSh {amount:,.2f}
+Reason: {reason}
+
+Please log in to the SeedVest app to view details and settle the penalty.
+
+Best regards,
+SeedVest Team
+"""
+    send_mail(
+        subject,
+        message,
+        settings.DEFAULT_FROM_EMAIL,
+        [user.email],
+        fail_silently=True,
     )

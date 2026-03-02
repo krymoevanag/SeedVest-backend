@@ -58,3 +58,31 @@ class ReportService:
             return 100.0
         paid_count = queryset.filter(status="PAID").count()
         return round((paid_count / total_count) * 100, 2)
+    @staticmethod
+    def get_user_reset_report(user):
+        """
+        Captures a snapshot of user's financial state before reset.
+        """
+        total_savings = Contribution.objects.filter(
+            user=user, 
+            status__in=["PAID", "LATE"]
+        ).aggregate(Sum("amount"))["amount__sum"] or Decimal("0.00")
+        
+        total_penalties = Penalty.objects.filter(
+            user=user
+        ).aggregate(Sum("amount"))["amount__sum"] or Decimal("0.00")
+        
+        contribution_count = Contribution.objects.filter(user=user).count()
+        standalone_penalty_count = Penalty.objects.filter(
+            user=user,
+            contribution__isnull=True
+        ).count()
+
+        return {
+            "user_email": user.email,
+            "total_savings": total_savings,
+            "total_penalties": total_penalties,
+            "contribution_count": contribution_count,
+            "standalone_penalty_count": standalone_penalty_count,
+            "timestamp": timezone.now().isoformat()
+        }

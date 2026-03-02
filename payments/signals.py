@@ -19,6 +19,19 @@ def handle_mpesa_payment_completion(sender, instance, created, **kwargs):
                 contribution.status = "PAID"
                 contribution.paid_date = timezone.now().date()
                 contribution.save()
+        elif instance.group and instance.user:
+            # If it's a dashboard-initiated payment (no specific contribution ID)
+            # Create a new PAID contribution for that group
+            from finance.models import Contribution
+            Contribution.objects.create(
+                user=instance.user,
+                group=instance.group,
+                amount=instance.amount,
+                status="PAID",
+                paid_date=timezone.now().date(),
+                due_date=timezone.now().date(),
+                is_manual_entry=False
+            )
         
         # 2. Send notification to the user
         if instance.user:

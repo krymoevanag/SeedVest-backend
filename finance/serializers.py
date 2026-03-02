@@ -9,6 +9,7 @@ from .models import (
     AutoSavingConfig,
     SavingsTarget,
     Investment,
+    MonthlySavingGeneration,
 )
 from .constants import MIN_MONTHLY_SAVING
 from groups.models import Group, Membership
@@ -196,6 +197,27 @@ class AutoSavingConfigSerializer(serializers.ModelSerializer):
                 })
 
         return attrs
+
+
+class MonthlySavingGenerationSerializer(serializers.ModelSerializer):
+    group_name = serializers.CharField(source="config.group.name", read_only=True)
+    user_email = serializers.EmailField(source="config.user.email", read_only=True)
+    amount = serializers.DecimalField(source="config.amount", max_digits=10, decimal_places=2, read_only=True)
+    due_date = serializers.DateField(source="contribution.due_date", read_only=True)
+    status = serializers.CharField(source="contribution.status", read_only=True)
+
+    class Meta:
+        model = MonthlySavingGeneration
+        fields = [
+            "id",
+            "group_name",
+            "user_email",
+            "amount",
+            "due_date",
+            "status",
+            "generated_for_month",
+            "created_at",
+        ]
 
 
 # =========================
@@ -403,3 +425,36 @@ class AdminMemberListSerializer(serializers.ModelSerializer):
             total=Sum("amount")
         )["total"]
         return total or Decimal("0.00")
+
+
+class AdminMembershipSerializer(serializers.ModelSerializer):
+    user_id = serializers.IntegerField(source="user.id")
+    full_name = serializers.SerializerMethodField()
+    email = serializers.EmailField(source="user.email")
+    membership_number = serializers.CharField(source="user.membership_number")
+    group_name = serializers.CharField(source="group.name")
+    savings_balance = serializers.DecimalField(
+        max_digits=10, decimal_places=2, read_only=True
+    )
+    penalties_balance = serializers.DecimalField(
+        max_digits=10, decimal_places=2, read_only=True
+    )
+
+    class Meta:
+        model = Membership
+        fields = [
+            "id",
+            "user_id",
+            "full_name",
+            "email",
+            "membership_number",
+            "group_id",
+            "group_name",
+            "role",
+            "savings_balance",
+            "penalties_balance",
+            "joined_at",
+        ]
+
+    def get_full_name(self, obj):
+        return f"{obj.user.first_name} {obj.user.last_name}".strip()

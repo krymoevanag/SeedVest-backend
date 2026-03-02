@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.db.models import Sum
-from .models import Group
+from .models import Group, Membership
 
 
 class GroupSerializer(serializers.ModelSerializer):
@@ -13,6 +13,10 @@ class GroupSerializer(serializers.ModelSerializer):
             "name",
             "description",
             "treasurer",
+            "savings_interval",
+            "is_penalty_enabled",
+            "penalty_amount",
+            "min_saving_amount",
             "created_at",
             "total_contributions",
         )
@@ -24,3 +28,17 @@ class GroupSerializer(serializers.ModelSerializer):
             )["total"]
             or 0.0
         )
+
+
+class MembershipSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Membership
+        fields = (
+            "id",
+            "user",
+            "group",
+            "role",
+            "is_auto_penalty_enabled",
+            "joined_at",
+        )
+        read_only_fields = ("joined_at",)

@@ -10,6 +10,10 @@ class MpesaTransaction(models.Model):
         "finance.Contribution", on_delete=models.SET_NULL, null=True, blank=True,
         related_name="mpesa_transactions"
     )
+    group = models.ForeignKey(
+        "groups.Group", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="mpesa_transactions"
+    )
     phone_number = models.CharField(max_length=15)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
 
