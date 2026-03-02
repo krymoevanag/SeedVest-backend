@@ -28,6 +28,8 @@ from .serializers import (
     AdminMembershipSerializer,
     MonthlySavingGenerationSerializer,
 )
+from .analytics_service import AnalyticsService
+from .analytics_serializers import MemberAnalyticsSerializer, GroupAnalyticsSerializer
 from .services import InsightService, AutoSaveService
 
 
@@ -738,3 +740,30 @@ class AutoSavingGenerationHistoryView(ListAPIView):
         if user.role in ("ADMIN", "TREASURER") or user.is_superuser:
             return MonthlySavingGeneration.objects.all().order_by("-created_at")
         return MonthlySavingGeneration.objects.filter(config__user=user).order_by("-created_at")
+
+class MemberAnalyticsView(APIView):
+    permission_classes = [IsAuthenticated, IsApprovedUser]
+
+    def get(self, request):
+        service = AnalyticsService(request.user)
+        # Handle optional group_id for personal analytics in specific group
+        group_id = request.query_params.get("group_id")
+        data = service.get_member_analytics(group_id=group_id)
+        serializer = MemberAnalyticsSerializer(data)
+        return Response(serializer.data)
+
+class GroupAnalyticsView(APIView):
+    permission_classes = [IsAuthenticated, IsTreasurerOrAdmin]
+
+    def get(self, request):
+        group_id = request.query_params.get("group_id")
+        if not group_id:
+            return Response({"detail": "group_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        service = AnalyticsService(request.user)
+        try:
+            data = service.get_group_analytics(group_id=group_id)
+            serializer = GroupAnalyticsSerializer(data)
+            return Response(serializer.data)
+        except Exception as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)

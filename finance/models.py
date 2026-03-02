@@ -454,3 +454,21 @@ class InvestmentStatusLog(models.Model):
 
     def __str__(self):
         return f"{self.investment.name}: {self.previous_status} -> {self.new_status} by {self.actor}"
+
+class InvestmentReturn(models.Model):
+    """Tracks actual returns/payouts for an investment."""
+    investment = models.ForeignKey(
+        Investment,
+        on_delete=models.CASCADE,
+        related_name="returns"
+    )
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    payout_date = models.DateField(default=date.today)
+    notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-payout_date"]
+
+    def __str__(self):
+        return f"Return of {self.amount} for {self.investment.name} on {self.payout_date}"
