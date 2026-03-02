@@ -6,6 +6,7 @@ import json
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.permissions import AllowAny
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse
 from .models import MpesaTransaction
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class InitiateMpesaPaymentView(APIView):
+    permission_classes = [AllowAny]
     @staticmethod
     def _normalize_phone(phone: str) -> str:
         cleaned = str(phone).strip().replace(" ", "")
@@ -156,6 +158,7 @@ def mpesa_callback(request):
 
 
 class MpesaTransactionStatusView(APIView):
+    permission_classes = [AllowAny]
     def get(self, request, checkout_request_id):
         try:
             transaction = MpesaTransaction.objects.get(checkout_request_id=checkout_request_id)
