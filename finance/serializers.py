@@ -9,6 +9,7 @@ from .models import (
     AutoSavingConfig,
     SavingsTarget,
     Investment,
+    InvestmentStatusLog,
     MonthlySavingGeneration,
 )
 from .constants import MIN_MONTHLY_SAVING
@@ -283,8 +284,19 @@ class InvestmentSerializer(serializers.ModelSerializer):
             "group_name",
             "name",
             "description",
+            "category",
+            "purpose",
+            "business_case",
+            "attachment",
             "amount_invested",
+            "currency",
             "expected_roi_percentage",
+            "return_type",
+            "duration",
+            "payout_frequency",
+            "min_capital",
+            "risk_level",
+            "lock_in_period",
             "status",
             "start_date",
             "end_date",
@@ -293,29 +305,64 @@ class InvestmentSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ("created_by", "created_at", "updated_at")
+        read_only_fields = ("created_by", "created_at", "updated_at", "status")
 
     def validate(self, attrs):
         user = self.context["request"].user
         group = attrs.get("group")
 
-        # Check if user has permission to create/update investments for this group
-        # Typically Admins or Treasurers of the group
-        if user.role == "MEMBER":
-            raise serializers.ValidationError("Members cannot manage investments.")
+        if not group:
+            if self.instance:
+                group = self.instance.group
+            else:
+                raise serializers.ValidationError({"group": "Group is required."})
+
+        # Check if user is member of the group
+        is_admin = user.role == "ADMIN"
         
-        if user.role == "TREASURER" and group.treasurer != user:
-            raise serializers.ValidationError("You are not the treasurer for this group.")
+        if not Membership.objects.filter(user=user, group=group).exists() and not is_admin:
+            raise serializers.ValidationError({"group": "You are not a member of this group."})
 
         # Validate dates
         start_date = attrs.get("start_date")
         end_date = attrs.get("end_date")
-        if end_date and start_date and end_date <= start_date:
+        if start_date and end_date and end_date <= start_date:
             raise serializers.ValidationError({
-                "end_date": "End date must be after start date"
+                "end_date": "Maturity date must be after start date"
             })
+            
+        amount = attrs.get("amount_invested")
+        if amount is not None and amount < 0:
+            raise serializers.ValidationError({"amount_invested": "Amount cannot be negative."})
 
         return attrs
+
+
+class InvestmentStatusLogSerializer(serializers.ModelSerializer):
+    actor_name = serializers.CharField(source="actor.email", read_only=True)
+
+    class Meta:
+        model = InvestmentStatusLog
+        fields = [
+            "id",
+            "investment",
+            "previous_status",
+            "new_status",
+            "notes",
+            "actor",
+            "actor_name",
+            "created_at",
+        ]
+        read_only_fields = [
+            "id",
+            "investment",
+            "previous_status",
+            "new_status",
+            "notes",
+            "actor",
+            "actor_name",
+            "created_at",
+        ]
 
 
 class AdminAddContributionSerializer(serializers.Serializer):

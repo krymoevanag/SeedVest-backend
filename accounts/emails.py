@@ -145,6 +145,33 @@ SeedVest Team
     )
 
 
+def send_investment_status_email(user, investment_name, amount, status, admin_notes=""):
+    subject = f"Investment Proposal Update: {status}"
+    message = f"""
+Dear {user.first_name},
+
+Your investment proposal '{investment_name}' has been updated to {status}.
+
+Amount: KSh {amount:,.2f}
+"""
+    if admin_notes:
+        message += f"\nAdmin Notes:\n{admin_notes}\n"
+    
+    message += """
+Please log in to the SeedVest app to view complete details.
+
+Best regards,
+SeedVest Team
+"""
+    send_mail(
+        subject,
+        message,
+        settings.DEFAULT_FROM_EMAIL,
+        [user.email],
+        fail_silently=True,
+    )
+
+
 def send_penalty_notification_email(user, amount, group_name, reason):
     subject = f"Penalty Issued - {group_name}"
     message = f"""

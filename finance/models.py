@@ -353,10 +353,31 @@ class SavingsTarget(models.Model):
 # =========================
 class Investment(models.Model):
     STATUS_CHOICES = [
-        ("PENDING", "Pending"),
+        ("DRAFT", "Draft"),
+        ("PENDING_APPROVAL", "Pending Approval"),
+        ("APPROVED", "Approved"),
+        ("REJECTED", "Rejected"),
         ("ACTIVE", "Active"),
-        ("COMPLETED", "Completed"),
+        ("MATURED", "Matured"),
+        ("CLOSED", "Closed"),
         ("CANCELLED", "Cancelled"),
+    ]
+    RETURN_TYPE_CHOICES = [
+        ("FIXED", "Fixed"),
+        ("VARIABLE", "Variable"),
+        ("COMPOUND", "Compound"),
+        ("PROFIT_BASED", "Profit-based"),
+    ]
+    PAYOUT_FREQUENCY_CHOICES = [
+        ("MONTHLY", "Monthly"),
+        ("QUARTERLY", "Quarterly"),
+        ("ANNUALLY", "Annually"),
+        ("AT_MATURITY", "At Maturity"),
+    ]
+    RISK_LEVEL_CHOICES = [
+        ("LOW", "Low"),
+        ("MEDIUM", "Medium"),
+        ("HIGH", "High"),
     ]
 
     group = models.ForeignKey(
@@ -367,21 +388,33 @@ class Investment(models.Model):
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     
-    amount_invested = models.DecimalField(max_digits=12, decimal_places=2)
+    category = models.CharField(max_length=100, blank=True)
+    purpose = models.TextField(blank=True)
+    business_case = models.TextField(blank=True, help_text="Optional business case summary")
+    attachment = models.FileField(upload_to="investments/attachments/", null=True, blank=True)
+    
+    amount_invested = models.DecimalField(max_digits=12, decimal_places=2, help_text="Proposed Principal Amount")
+    currency = models.CharField(max_length=10, default="KES")
     expected_roi_percentage = models.DecimalField(
         max_digits=5, 
         decimal_places=2,
         help_text="Expected Return on Investment as a percentage"
     )
+    return_type = models.CharField(max_length=20, choices=RETURN_TYPE_CHOICES, default="FIXED")
+    duration = models.PositiveIntegerField(help_text="Investment Duration in months", null=True, blank=True)
+    payout_frequency = models.CharField(max_length=20, choices=PAYOUT_FREQUENCY_CHOICES, default="AT_MATURITY")
+    min_capital = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True, help_text="Minimum Required Capital")
+    risk_level = models.CharField(max_length=20, choices=RISK_LEVEL_CHOICES, default="MEDIUM")
+    lock_in_period = models.PositiveIntegerField(help_text="Lock-in Period in months", null=True, blank=True)
     
     status = models.CharField(
         max_length=20,
         choices=STATUS_CHOICES,
-        default="PENDING",
+        default="PENDING_APPROVAL",
     )
     
-    start_date = models.DateField()
-    end_date = models.DateField(null=True, blank=True)
+    start_date = models.DateField(help_text="Proposed Start Date")
+    end_date = models.DateField(null=True, blank=True, help_text="Proposed Maturity Date")
     
     created_by = models.ForeignKey(
         User,
@@ -398,3 +431,26 @@ class Investment(models.Model):
 
     def __str__(self):
         return f"{self.name} - {self.group} ({self.status})"
+
+class InvestmentStatusLog(models.Model):
+    investment = models.ForeignKey(
+        Investment,
+        on_delete=models.CASCADE,
+        related_name="status_logs"
+    )
+    previous_status = models.CharField(max_length=20)
+    new_status = models.CharField(max_length=20)
+    notes = models.TextField(blank=True, null=True)
+    actor = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="investment_status_actions"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.investment.name}: {self.previous_status} -> {self.new_status} by {self.actor}"

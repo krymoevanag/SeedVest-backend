@@ -14,7 +14,7 @@ from django.utils import timezone
 from accounts.permissions import IsApprovedUser
 from finance.permissions import HasFinanceAccess, PenaltyPermission, IsTreasurerOrAdmin
 from groups.models import Group, Membership
-from .models import Contribution, Penalty, AutoSavingConfig, SavingsTarget, Investment
+from .models import Contribution, Penalty, AutoSavingConfig, SavingsTarget, Investment, MonthlySavingGeneration
 from .serializers import (
     ContributionSerializer,
     ManualContributionProposalSerializer,
@@ -301,8 +301,7 @@ class SavingsTargetViewSet(viewsets.ModelViewSet):
 class InvestmentViewSet(viewsets.ModelViewSet):
     """
     CRUD for group investments.
-    Only Admins and Treasurers can create/update.
-    Members can only view.
+    Admins/Treasurers can manage. Members can propose and view.
     """
     serializer_class = InvestmentSerializer
     permission_classes = [IsAuthenticated, IsApprovedUser]
@@ -325,6 +324,99 @@ class InvestmentViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
+
+    from rest_framework.decorators import action
+    @action(detail=True, methods=["post"])
+    def approve(self, request, pk=None):
+        investment = self.get_object()
+        user = request.user
+        
+        # Permission check
+        if user.role not in ["ADMIN", "TREASURER"] and not user.is_superuser:
+            return Response({"detail": "Not authorized."}, status=status.HTTP_403_FORBIDDEN)
+            
+        if investment.status != "PENDING_APPROVAL":
+            return Response({"detail": "Only pending investments can be approved."}, status=status.HTTP_400_BAD_REQUEST)
+            
+        previous_status = investment.status
+        investment.status = "APPROVED"
+        investment.save()
+        
+        from finance.models import InvestmentStatusLog
+        InvestmentStatusLog.objects.create(
+            investment=investment,
+            previous_status=previous_status,
+            new_status="APPROVED",
+            notes=request.data.get("notes", ""),
+            actor=user
+        )
+        
+        # Notifications
+        from notifications.models import Notification
+        from accounts.emails import send_investment_status_email
+        Notification.objects.create(
+            recipient=investment.created_by,
+            title="Investment Approved",
+            message=f"Your proposal '{investment.name}' has been approved.",
+            category="SYSTEM",
+            link="/governance/finance",
+        )
+        
+        send_investment_status_email(
+            user=investment.created_by,
+            investment_name=investment.name,
+            amount=investment.amount_invested,
+            status="APPROVED",
+            admin_notes=request.data.get("notes", "")
+        )
+        
+        return Response(self.get_serializer(investment).data)
+
+    from rest_framework.decorators import action
+    @action(detail=True, methods=["post"])
+    def reject(self, request, pk=None):
+        investment = self.get_object()
+        user = request.user
+        
+        if user.role not in ["ADMIN", "TREASURER"] and not user.is_superuser:
+            return Response({"detail": "Not authorized."}, status=status.HTTP_403_FORBIDDEN)
+            
+        notes = request.data.get("notes", "")
+        if not notes:
+            return Response({"notes": "Rejection requires notes/reason."}, status=status.HTTP_400_BAD_REQUEST)
+            
+        previous_status = investment.status
+        investment.status = "REJECTED"
+        investment.save()
+        
+        from finance.models import InvestmentStatusLog
+        InvestmentStatusLog.objects.create(
+            investment=investment,
+            previous_status=previous_status,
+            new_status="REJECTED",
+            notes=notes,
+            actor=user
+        )
+        
+        from notifications.models import Notification
+        from accounts.emails import send_investment_status_email
+        Notification.objects.create(
+            recipient=investment.created_by,
+            title="Investment Rejected",
+            message=f"Your proposal '{investment.name}' was rejected. See details.",
+            category="SYSTEM",
+            link="/governance/finance",
+        )
+        
+        send_investment_status_email(
+            user=investment.created_by,
+            investment_name=investment.name,
+            amount=investment.amount_invested,
+            status="REJECTED",
+            admin_notes=notes
+        )
+        
+        return Response(self.get_serializer(investment).data)
 
 
 # =========================
