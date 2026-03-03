@@ -26,7 +26,18 @@ class AnalyticsService:
         # 1. Investment Core Metrics
         active_investments = investments.filter(status='ACTIVE')
         total_invested = investments.filter(status__in=['ACTIVE', 'MATURED', 'CLOSED']).aggregate(total=Sum('amount_invested'))['total'] or Decimal('0.00')
-        total_returns = InvestmentReturn.objects.filter(investment__created_by=self.user).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+        returns_qs = InvestmentReturn.objects.filter(
+            investment__created_by=self.user,
+            investment__is_archived=False,
+        )
+        if group_id:
+            returns_qs = returns_qs.filter(investment__group_id=group_id)
+        if cycle_id:
+            returns_qs = returns_qs.filter(investment__financial_cycle_id=cycle_id)
+        total_returns = (
+            returns_qs.aggregate(total=Sum('amount'))['total']
+            or Decimal('0.00')
+        )
         
         # Expected returns for active investments
         expected_returns = Decimal('0.00')
@@ -102,7 +113,16 @@ class AnalyticsService:
         # 1. Group Core Metrics
         active_investments = investments.filter(status='ACTIVE')
         total_capital = investments.filter(status__in=['ACTIVE', 'MATURED', 'CLOSED']).aggregate(total=Sum('amount_invested'))['total'] or Decimal('0.00')
-        total_returns_dist = InvestmentReturn.objects.filter(investment__group=group).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+        returns_qs = InvestmentReturn.objects.filter(
+            investment__group=group,
+            investment__is_archived=False,
+        )
+        if cycle_id:
+            returns_qs = returns_qs.filter(investment__financial_cycle_id=cycle_id)
+        total_returns_dist = (
+            returns_qs.aggregate(total=Sum('amount'))['total']
+            or Decimal('0.00')
+        )
         
         # 2. Member Activity
         memberships = Membership.objects.filter(group=group)
