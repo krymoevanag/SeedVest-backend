@@ -10,16 +10,18 @@ class AnalyticsService:
     def __init__(self, user):
         self.user = user
 
-    def get_member_analytics(self, group_id=None, days=365):
+    def get_member_analytics(self, group_id=None, days=365, cycle_id=None):
         """
         Computes personalized analytics for the authenticated user.
         """
         end_date = timezone.now().date()
         start_date = end_date - timedelta(days=days)
 
-        investments = Investment.objects.filter(created_by=self.user)
+        investments = Investment.objects.filter(created_by=self.user, is_archived=False)
         if group_id:
             investments = investments.filter(group_id=group_id)
+        if cycle_id:
+            investments = investments.filter(financial_cycle_id=cycle_id)
 
         # 1. Investment Core Metrics
         active_investments = investments.filter(status='ACTIVE')
@@ -36,9 +38,15 @@ class AnalyticsService:
             roi_percentage = (total_returns / total_invested) * 100
 
         # 2. Savings Summary
-        contributions = Contribution.objects.filter(user=self.user, status__in=['PAID', 'LATE'])
+        contributions = Contribution.objects.filter(
+            user=self.user,
+            status__in=['PAID', 'LATE'],
+            is_archived=False,
+        )
         if group_id:
             contributions = contributions.filter(group_id=group_id)
+        if cycle_id:
+            contributions = contributions.filter(financial_cycle_id=cycle_id)
         
         total_savings = contributions.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
         
@@ -52,7 +60,7 @@ class AnalyticsService:
         risk_dist = list(investments.values('risk_level').annotate(value=Sum('amount_invested'), count=Count('id')))
 
         # 4. Growth Trend (Last 12 months)
-        growth_trend = self._get_growth_trend(self.user, group_id)
+        growth_trend = self._get_growth_trend(self.user, group_id, cycle_id=cycle_id)
 
         return {
             "core_metrics": {
@@ -77,7 +85,7 @@ class AnalyticsService:
             }
         }
 
-    def get_group_analytics(self, group_id, days=365):
+    def get_group_analytics(self, group_id, days=365, cycle_id=None):
         """
         Computes aggregated group analytics for admins/treasurers.
         """
@@ -87,7 +95,9 @@ class AnalyticsService:
         group = Group.objects.get(id=group_id)
         end_date = timezone.now().date()
         
-        investments = Investment.objects.filter(group=group)
+        investments = Investment.objects.filter(group=group, is_archived=False)
+        if cycle_id:
+            investments = investments.filter(financial_cycle_id=cycle_id)
         
         # 1. Group Core Metrics
         active_investments = investments.filter(status='ACTIVE')
@@ -125,11 +135,11 @@ class AnalyticsService:
                 "duration": list(investments.values('duration').annotate(count=Count('id')))
             },
             "trends": {
-                "growth": self._get_group_growth_trend(group)
+                "growth": self._get_group_growth_trend(group, cycle_id=cycle_id)
             }
         }
 
-    def _get_growth_trend(self, user, group_id=None):
+    def _get_growth_trend(self, user, group_id=None, cycle_id=None):
         """Calculates cumulative savings + investment growth over last 6 months."""
         trend = []
         today = timezone.now().date()
@@ -143,20 +153,26 @@ class AnalyticsService:
             savings = Contribution.objects.filter(
                 user=user, 
                 status__in=['PAID', 'LATE'],
-                paid_date__lte=month_date + timedelta(days=31)
+                paid_date__lte=month_date + timedelta(days=31),
+                is_archived=False,
             )
             if group_id:
                 savings = savings.filter(group_id=group_id)
+            if cycle_id:
+                savings = savings.filter(financial_cycle_id=cycle_id)
             savings_val = savings.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
             
             # Cumulative investment value
             invs = Investment.objects.filter(
                 created_by=user,
                 status__in=['ACTIVE', 'MATURED', 'CLOSED'],
-                created_at__lte=month_date + timedelta(days=31)
+                created_at__lte=month_date + timedelta(days=31),
+                is_archived=False,
             )
             if group_id:
                 invs = invs.filter(group_id=group_id)
+            if cycle_id:
+                invs = invs.filter(financial_cycle_id=cycle_id)
             inv_val = invs.aggregate(total=Sum('amount_invested'))['total'] or Decimal('0.00')
             
             trend.append({
@@ -167,7 +183,7 @@ class AnalyticsService:
             })
         return trend
 
-    def _get_group_growth_trend(self, group):
+    def _get_group_growth_trend(self, group, cycle_id=None):
         """Overarching group growth trend."""
         trend = []
         today = timezone.now().date()
@@ -180,15 +196,33 @@ class AnalyticsService:
             savings_val = Contribution.objects.filter(
                 group=group,
                 status__in=['PAID', 'LATE'],
-                paid_date__lte=month_date + timedelta(days=31)
+                paid_date__lte=month_date + timedelta(days=31),
+                is_archived=False,
             ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+            if cycle_id:
+                savings_val = Contribution.objects.filter(
+                    group=group,
+                    status__in=['PAID', 'LATE'],
+                    paid_date__lte=month_date + timedelta(days=31),
+                    financial_cycle_id=cycle_id,
+                    is_archived=False,
+                ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
             
             # Total group investments
             inv_val = Investment.objects.filter(
                 group=group,
                 status__in=['ACTIVE', 'MATURED', 'CLOSED'],
-                created_at__lte=month_date + timedelta(days=31)
+                created_at__lte=month_date + timedelta(days=31),
+                is_archived=False,
             ).aggregate(total=Sum('amount_invested'))['total'] or Decimal('0.00')
+            if cycle_id:
+                inv_val = Investment.objects.filter(
+                    group=group,
+                    status__in=['ACTIVE', 'MATURED', 'CLOSED'],
+                    created_at__lte=month_date + timedelta(days=31),
+                    financial_cycle_id=cycle_id,
+                    is_archived=False,
+                ).aggregate(total=Sum('amount_invested'))['total'] or Decimal('0.00')
             
             trend.append({
                 "month": month_name,

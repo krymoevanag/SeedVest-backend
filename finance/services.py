@@ -5,8 +5,9 @@ from datetime import date
 import calendar
 from .models import Contribution, Penalty, AutoSavingConfig, MonthlySavingGeneration
 from notifications.models import Notification
-from groups.models import Membership
+from groups.models import Membership, Group
 from accounts.emails import send_penalty_notification_email
+from .cycle_services import FinancialCycleService
 
 class InsightService:
     # ... (rest of InsightService stays same)
@@ -27,7 +28,7 @@ class InsightService:
         }
 
     def _get_summary(self):
-        contributions = Contribution.objects.filter(user=self.user)
+        contributions = Contribution.objects.filter(user=self.user, is_archived=False)
         penalties = Penalty.objects.filter(contribution__user=self.user)
 
         total_contributed = contributions.filter(status__in=["PAID", "LATE"]).aggregate(Sum("amount"))["amount__sum"] or 0
@@ -92,7 +93,10 @@ class AutoSaveService:
         contributions for members based on their AutoSavingConfig.
         """
         today = timezone.now().date()
-        active_configs = AutoSavingConfig.objects.filter(is_active=True).select_related('group', 'user')
+        active_configs = AutoSavingConfig.objects.filter(
+            is_active=True,
+            is_archived=False,
+        ).select_related('group', 'user')
         
         created_count = 0
         skipped_count = 0
@@ -134,13 +138,16 @@ class AutoSaveService:
                                     last_day = calendar.monthrange(today.year, today.month)[1]
                                     due_date = date(today.year, today.month, last_day)
 
-                                Contribution.objects.create(
+                                contribution = Contribution.objects.create(
                                     user=config.user,
                                     group=group,
                                     amount=config.amount, # Member's specific target
+                                    expected_amount=group.min_saving_amount,
+                                    contribution_month=today.replace(day=1),
                                     due_date=due_date,
                                     status="PENDING",
                                 )
+                                FinancialCycleService.sync_monthly_record_from_contribution(contribution)
                                 created_count += 1
                         except Exception as e:
                             errors.append(f"Creation error {config.user.email}: {e}")

@@ -269,13 +269,13 @@ class AdminAddContributionTests(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["deleted_contributions"], 1)
-        self.assertEqual(response.data["deleted_standalone_penalties"], 1)
+        self.assertEqual(response.data["archived_contributions"], 1)
+        self.assertEqual(response.data["archived_standalone_penalties"], 1)
         self.assertEqual(
-            Contribution.objects.filter(user=self.member).count(),
-            0,
+            Contribution.objects.filter(user=self.member, is_archived=True).count(),
+            1,
         )
         self.assertEqual(
-            Penalty.objects.filter(user=self.member).count(),
-            0,
+            Penalty.objects.filter(user=self.member, is_archived=True).count(),
+            1,
         )

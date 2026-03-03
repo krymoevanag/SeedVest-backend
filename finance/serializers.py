@@ -4,7 +4,10 @@ from decimal import Decimal
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from .models import (
+    FinancialCycle,
+    CycleClosureReport,
     Contribution,
+    MonthlyContributionRecord,
     Penalty,
     AutoSavingConfig,
     SavingsTarget,
@@ -24,7 +27,17 @@ class ContributionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Contribution
         fields = "__all__"
-        read_only_fields = ("penalty", "status", "created_at")
+        read_only_fields = (
+            "penalty",
+            "status",
+            "created_at",
+            "financial_cycle",
+            "contribution_month",
+            "expected_amount",
+            "is_locked",
+            "locked_at",
+            "is_archived",
+        )
 
     def get_suggested_penalty(self, obj):
         return obj.calculate_suggested_penalty()
@@ -104,16 +117,19 @@ class ManualContributionProposalSerializer(serializers.Serializer):
     def create(self, validated_data):
         user = validated_data["user"]
         group = validated_data["group_obj"]
+        reported_date = validated_data["reported_paid_date"]
 
         contribution = Contribution(
             user=user,
             group=group,
             amount=validated_data["amount"],
-            due_date=date.today(),
+            expected_amount=group.min_saving_amount,
+            due_date=reported_date,
+            contribution_month=reported_date.replace(day=1),
             paid_date=None,
             status="PENDING",
             is_manual_entry=True,
-            reported_paid_date=validated_data["reported_paid_date"],
+            reported_paid_date=reported_date,
             reported_payment_method=validated_data.get("reported_payment_method", ""),
             reported_reference=validated_data.get("reported_reference", ""),
             reported_note=validated_data.get("reported_note", ""),
@@ -272,9 +288,135 @@ class SavingsTargetSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class FinancialCycleSerializer(serializers.ModelSerializer):
+    group_name = serializers.CharField(source="group.name", read_only=True)
+    created_by_name = serializers.CharField(source="created_by.email", read_only=True)
+
+    class Meta:
+        model = FinancialCycle
+        fields = [
+            "id",
+            "group",
+            "group_name",
+            "cycle_name",
+            "start_date",
+            "end_date",
+            "status",
+            "total_contributions",
+            "total_investments",
+            "total_returns",
+            "created_by",
+            "created_by_name",
+            "closed_at",
+            "archived_at",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = (
+            "status",
+            "total_contributions",
+            "total_investments",
+            "total_returns",
+            "created_by",
+            "closed_at",
+            "archived_at",
+            "created_at",
+            "updated_at",
+        )
+
+    def validate(self, attrs):
+        start_date = attrs.get("start_date")
+        end_date = attrs.get("end_date")
+        if start_date and end_date and end_date <= start_date:
+            raise serializers.ValidationError(
+                {"end_date": "End date must be after start date."}
+            )
+        return attrs
+
+
+class FinancialCycleTransitionSerializer(serializers.Serializer):
+    cycle_name = serializers.CharField(required=False, allow_blank=True, max_length=120)
+    archive_closed_cycle = serializers.BooleanField(required=False, default=True)
+    create_new_cycle = serializers.BooleanField(required=False, default=True)
+    carry_forward_balances = serializers.BooleanField(required=False, default=False)
+
+
+class CycleClosureReportSerializer(serializers.ModelSerializer):
+    cycle_name = serializers.CharField(source="cycle.cycle_name", read_only=True)
+    group_name = serializers.CharField(source="cycle.group.name", read_only=True)
+
+    class Meta:
+        model = CycleClosureReport
+        fields = [
+            "id",
+            "cycle",
+            "cycle_name",
+            "group_name",
+            "total_expected_contributions",
+            "total_collected_contributions",
+            "contribution_fulfillment_rate",
+            "member_payment_consistency_score",
+            "outstanding_totals",
+            "snapshot",
+            "generated_at",
+        ]
+        read_only_fields = fields
+
+
+class MonthlyContributionRecordSerializer(serializers.ModelSerializer):
+    member_name = serializers.SerializerMethodField()
+    cycle_name = serializers.CharField(source="financial_cycle.cycle_name", read_only=True)
+    group_name = serializers.CharField(source="group.name", read_only=True)
+
+    class Meta:
+        model = MonthlyContributionRecord
+        fields = [
+            "id",
+            "user",
+            "member_name",
+            "group",
+            "group_name",
+            "financial_cycle",
+            "cycle_name",
+            "month",
+            "expected_contribution_amount",
+            "actual_contribution_paid",
+            "payment_date",
+            "outstanding_amount",
+            "status",
+            "source_contribution",
+            "is_archived",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = (
+            "user",
+            "group",
+            "financial_cycle",
+            "month",
+            "expected_contribution_amount",
+            "actual_contribution_paid",
+            "payment_date",
+            "outstanding_amount",
+            "status",
+            "source_contribution",
+            "is_archived",
+            "created_at",
+            "updated_at",
+        )
+
+    def get_member_name(self, obj):
+        first = (obj.user.first_name or "").strip()
+        last = (obj.user.last_name or "").strip()
+        full_name = f"{first} {last}".strip()
+        return full_name or obj.user.email
+
+
 class InvestmentSerializer(serializers.ModelSerializer):
     group_name = serializers.CharField(source="group.name", read_only=True)
     created_by_name = serializers.CharField(source="created_by.email", read_only=True)
+    reviewed_by_name = serializers.CharField(source="reviewed_by.email", read_only=True)
+    financial_cycle_name = serializers.CharField(source="financial_cycle.cycle_name", read_only=True)
 
     class Meta:
         model = Investment
@@ -282,6 +424,8 @@ class InvestmentSerializer(serializers.ModelSerializer):
             "id",
             "group",
             "group_name",
+            "financial_cycle",
+            "financial_cycle_name",
             "name",
             "description",
             "category",
@@ -302,10 +446,25 @@ class InvestmentSerializer(serializers.ModelSerializer):
             "end_date",
             "created_by",
             "created_by_name",
+            "reviewed_by",
+            "reviewed_by_name",
+            "reviewed_at",
+            "decision_notes",
+            "is_archived",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ("created_by", "created_at", "updated_at", "status")
+        read_only_fields = (
+            "created_by",
+            "financial_cycle",
+            "reviewed_by",
+            "reviewed_at",
+            "decision_notes",
+            "is_archived",
+            "created_at",
+            "updated_at",
+            "status",
+        )
 
     def validate(self, attrs):
         user = self.context["request"].user
@@ -318,7 +477,7 @@ class InvestmentSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"group": "Group is required."})
 
         # Check if user is member of the group
-        is_admin = user.role == "ADMIN"
+        is_admin = user.role == "ADMIN" or user.is_superuser
         
         if not Membership.objects.filter(user=user, group=group).exists() and not is_admin:
             raise serializers.ValidationError({"group": "You are not a member of this group."})
@@ -336,6 +495,35 @@ class InvestmentSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"amount_invested": "Amount cannot be negative."})
 
         return attrs
+
+
+class InvestmentProposalInboxSerializer(serializers.ModelSerializer):
+    investment_title = serializers.CharField(source="name", read_only=True)
+    member_name = serializers.SerializerMethodField()
+    proposed_capital = serializers.DecimalField(source="amount_invested", max_digits=12, decimal_places=2, read_only=True)
+    submission_date = serializers.DateTimeField(source="created_at", read_only=True)
+    current_status = serializers.CharField(source="status", read_only=True)
+
+    class Meta:
+        model = Investment
+        fields = [
+            "id",
+            "investment_title",
+            "member_name",
+            "category",
+            "proposed_capital",
+            "risk_level",
+            "submission_date",
+            "current_status",
+        ]
+
+    def get_member_name(self, obj):
+        if not obj.created_by:
+            return "Unknown Member"
+        first = (obj.created_by.first_name or "").strip()
+        last = (obj.created_by.last_name or "").strip()
+        full_name = f"{first} {last}".strip()
+        return full_name or obj.created_by.email
 
 
 class InvestmentStatusLogSerializer(serializers.ModelSerializer):
@@ -362,6 +550,85 @@ class InvestmentStatusLogSerializer(serializers.ModelSerializer):
             "actor",
             "actor_name",
             "created_at",
+        ]
+
+
+class InvestmentProposalDetailSerializer(InvestmentSerializer):
+    member_name = serializers.SerializerMethodField()
+    member_email = serializers.EmailField(source="created_by.email", read_only=True)
+    member_contribution_history = serializers.SerializerMethodField()
+    risk_indicators = serializers.SerializerMethodField()
+    previous_member_proposals = serializers.SerializerMethodField()
+    status_history = InvestmentStatusLogSerializer(source="status_logs", many=True, read_only=True)
+
+    class Meta(InvestmentSerializer.Meta):
+        fields = InvestmentSerializer.Meta.fields + [
+            "member_name",
+            "member_email",
+            "member_contribution_history",
+            "risk_indicators",
+            "previous_member_proposals",
+            "status_history",
+        ]
+
+    def get_member_name(self, obj):
+        if not obj.created_by:
+            return "Unknown Member"
+        first = (obj.created_by.first_name or "").strip()
+        last = (obj.created_by.last_name or "").strip()
+        full_name = f"{first} {last}".strip()
+        return full_name or obj.created_by.email
+
+    def get_member_contribution_history(self, obj):
+        if not obj.created_by_id:
+            return []
+        history = (
+            Contribution.objects.filter(
+                user_id=obj.created_by_id,
+                group_id=obj.group_id,
+            )
+            .order_by("-due_date", "-created_at")[:12]
+        )
+        return [
+            {
+                "id": row.id,
+                "amount": row.amount,
+                "expected_amount": row.expected_amount,
+                "due_date": row.due_date,
+                "paid_date": row.paid_date,
+                "status": row.status,
+                "cycle": row.financial_cycle.cycle_name if row.financial_cycle else None,
+            }
+            for row in history
+        ]
+
+    def get_risk_indicators(self, obj):
+        return {
+            "risk_level": obj.risk_level,
+            "expected_roi_percentage": obj.expected_roi_percentage,
+            "duration_months": obj.duration,
+            "lock_in_period_months": obj.lock_in_period,
+            "return_type": obj.return_type,
+            "payout_frequency": obj.payout_frequency,
+        }
+
+    def get_previous_member_proposals(self, obj):
+        if not obj.created_by_id:
+            return []
+        previous = (
+            Investment.objects.filter(created_by_id=obj.created_by_id)
+            .exclude(id=obj.id)
+            .order_by("-created_at")[:10]
+        )
+        return [
+            {
+                "id": row.id,
+                "title": row.name,
+                "status": row.status,
+                "amount_invested": row.amount_invested,
+                "created_at": row.created_at,
+            }
+            for row in previous
         ]
 
 
@@ -425,7 +692,9 @@ class AdminAddContributionSerializer(serializers.Serializer):
             user=user,
             group=group,
             amount=validated_data['amount'],
+            expected_amount=group.min_saving_amount,
             due_date=paid_date,
+            contribution_month=paid_date.replace(day=1),
             paid_date=paid_date,
             status='PAID',
         )
@@ -468,7 +737,7 @@ class AdminMemberListSerializer(serializers.ModelSerializer):
         return f"{obj.first_name} {obj.last_name}".strip()
 
     def get_total_penalties(self, obj):
-        total = obj.penalties.aggregate(
+        total = obj.penalties.filter(is_archived=False).aggregate(
             total=Sum("amount")
         )["total"]
         return total or Decimal("0.00")

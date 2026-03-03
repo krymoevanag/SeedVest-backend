@@ -2,7 +2,9 @@ from datetime import date
 from decimal import Decimal
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
+from django.db.models import Q
 from django.utils import timezone
 
 from groups.models import Group
@@ -14,6 +16,173 @@ from .constants import (
 )
 
 User = settings.AUTH_USER_MODEL
+
+
+def month_start(value):
+    return value.replace(day=1)
+
+
+# =========================
+# Financial Cycle Models
+# =========================
+class FinancialCycle(models.Model):
+    STATUS_CHOICES = [
+        ("ACTIVE", "Active"),
+        ("CLOSED", "Closed"),
+        ("ARCHIVED", "Archived"),
+    ]
+
+    group = models.ForeignKey(
+        Group,
+        on_delete=models.CASCADE,
+        related_name="financial_cycles",
+    )
+    cycle_name = models.CharField(max_length=120)
+    start_date = models.DateField()
+    end_date = models.DateField()
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="ACTIVE")
+    total_contributions = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
+    total_investments = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
+    total_returns = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_financial_cycles",
+    )
+    closed_at = models.DateTimeField(null=True, blank=True)
+    archived_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-start_date", "-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["group"],
+                condition=Q(status="ACTIVE"),
+                name="unique_active_financial_cycle_per_group",
+            ),
+            models.UniqueConstraint(
+                fields=["group", "cycle_name"],
+                name="unique_financial_cycle_name_per_group",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.group.name} - {self.cycle_name} ({self.status})"
+
+    def clean(self):
+        if self.end_date <= self.start_date:
+            raise ValidationError("End date must be after start date.")
+
+    @classmethod
+    def get_or_create_for_date(
+        cls,
+        group,
+        reference_date,
+        created_by=None,
+        require_active=False,
+    ):
+        active = (
+            cls.objects.filter(
+                group=group,
+                status="ACTIVE",
+                start_date__lte=reference_date,
+                end_date__gte=reference_date,
+            )
+            .order_by("-start_date")
+            .first()
+        )
+        if active:
+            return active, False
+
+        existing = (
+            cls.objects.filter(
+                group=group,
+                start_date__lte=reference_date,
+                end_date__gte=reference_date,
+            )
+            .order_by("-start_date")
+            .first()
+        )
+        if existing:
+            if require_active:
+                raise ValidationError(
+                    f"Financial cycle '{existing.cycle_name}' is {existing.status} and cannot accept new records."
+                )
+            return existing, False
+
+        cycle_name = f"{reference_date.year} Cycle"
+        named_cycle = (
+            cls.objects.filter(group=group, cycle_name=cycle_name)
+            .order_by("-created_at")
+            .first()
+        )
+        if named_cycle:
+            if require_active:
+                raise ValidationError(
+                    f"Financial cycle '{named_cycle.cycle_name}' is {named_cycle.status} and cannot accept new records."
+                )
+            return named_cycle, False
+
+        cycle = cls.objects.create(
+            group=group,
+            cycle_name=cycle_name,
+            start_date=date(reference_date.year, 1, 1),
+            end_date=date(reference_date.year, 12, 31),
+            status="ACTIVE",
+            created_by=created_by,
+        )
+        return cycle, True
+
+    def refresh_totals(self, commit=True):
+        self.total_contributions = self.contributions.filter(
+            status__in=["PAID", "LATE"],
+            is_archived=False,
+        ).aggregate(
+            total=models.Sum("amount")
+        )["total"] or Decimal("0.00")
+        self.total_investments = self.investments.filter(
+            status__in=["APPROVED", "ACTIVE", "MATURED", "CLOSED"],
+            is_archived=False,
+        ).aggregate(total=models.Sum("amount_invested"))["total"] or Decimal("0.00")
+        self.total_returns = InvestmentReturn.objects.filter(
+            investment__financial_cycle=self
+        ).aggregate(total=models.Sum("amount"))["total"] or Decimal("0.00")
+
+        if commit:
+            self.save(
+                update_fields=[
+                    "total_contributions",
+                    "total_investments",
+                    "total_returns",
+                    "updated_at",
+                ]
+            )
+        return self
+
+
+class CycleClosureReport(models.Model):
+    cycle = models.OneToOneField(
+        FinancialCycle,
+        on_delete=models.PROTECT,
+        related_name="closure_report",
+    )
+    total_expected_contributions = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
+    total_collected_contributions = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
+    contribution_fulfillment_rate = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("0.00"))
+    member_payment_consistency_score = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("0.00"))
+    outstanding_totals = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
+    snapshot = models.JSONField(default=dict, blank=True)
+    generated_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-generated_at"]
+
+    def __str__(self):
+        return f"Closure report for {self.cycle.cycle_name}"
 
 
 # =========================
@@ -81,8 +250,21 @@ class Contribution(models.Model):
         on_delete=models.CASCADE,
         related_name="finance_contributions",
     )
+    financial_cycle = models.ForeignKey(
+        FinancialCycle,
+        on_delete=models.PROTECT,
+        related_name="contributions",
+        null=True,
+        blank=True,
+    )
+    contribution_month = models.DateField(null=True, blank=True)
 
     amount = models.DecimalField(max_digits=10, decimal_places=2)
+    expected_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
     due_date = models.DateField()
     paid_date = models.DateField(null=True, blank=True)
 
@@ -124,14 +306,60 @@ class Contribution(models.Model):
         related_name="reviewed_finance_contributions",
     )
     reviewed_at = models.DateTimeField(null=True, blank=True)
+    rejection_reason = models.TextField(blank=True, default="")
+    is_locked = models.BooleanField(default=False)
+    locked_at = models.DateTimeField(null=True, blank=True)
+    is_archived = models.BooleanField(default=False)
 
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ["due_date"]
+        ordering = ["due_date", "created_at"]
 
     def __str__(self):
         return f"{self.user} - {self.amount} ({self.status})"
+
+    def _assign_cycle_defaults(self):
+        if self.due_date and not self.contribution_month:
+            self.contribution_month = month_start(self.due_date)
+
+        if self.expected_amount <= Decimal("0.00"):
+            if self.group_id and self.group.min_saving_amount:
+                self.expected_amount = self.group.min_saving_amount
+            else:
+                self.expected_amount = self.amount
+
+        if self.group_id and self.due_date and not self.financial_cycle_id:
+            cycle, _ = FinancialCycle.get_or_create_for_date(
+                group=self.group,
+                reference_date=self.due_date,
+                require_active=True,
+            )
+            self.financial_cycle = cycle
+
+    def _validate_cycle_integrity(self):
+        if not self.financial_cycle_id:
+            return
+
+        cycle = self.financial_cycle
+        if cycle.group_id != self.group_id:
+            raise ValidationError("Contribution cycle group must match contribution group.")
+
+        if self.due_date and not (cycle.start_date <= self.due_date <= cycle.end_date):
+            raise ValidationError("Contribution due date must fall within its financial cycle range.")
+
+        if self.contribution_month:
+            if self.contribution_month.day != 1:
+                raise ValidationError("Contribution month must be the first day of that month.")
+            if not (cycle.start_date <= self.contribution_month <= cycle.end_date):
+                raise ValidationError(
+                    "Contribution month must fall within its financial cycle range."
+                )
+
+        if self._state.adding and cycle.status != "ACTIVE":
+            raise ValidationError(
+                f"Cannot create contribution in a {cycle.status.lower()} cycle."
+            )
 
     # -------------------------
     # Status Logic
@@ -164,9 +392,9 @@ class Contribution(models.Model):
             return Decimal("0.00")
 
         # Penalty starts from the 1st of the month after due_date
-        month_start = self.due_date.replace(day=1)
-        next_month = 1 if month_start.month == 12 else month_start.month + 1
-        year = month_start.year + 1 if month_start.month == 12 else month_start.year
+        due_month_start = self.due_date.replace(day=1)
+        next_month = 1 if due_month_start.month == 12 else due_month_start.month + 1
+        year = due_month_start.year + 1 if due_month_start.month == 12 else due_month_start.year
 
         penalty_start = date(year, next_month, 1)
 
@@ -181,11 +409,19 @@ class Contribution(models.Model):
 
         return Decimal("0.00")
 
+    def lock(self, commit=True):
+        self.is_locked = True
+        self.locked_at = timezone.now()
+        if commit:
+            self.save(update_fields=["is_locked", "locked_at"])
+
     # -------------------------
     # Auto-update on save
     # -------------------------
     def save(self, *args, **kwargs):
         skip_status_evaluation = kwargs.pop("skip_status_evaluation", False)
+        self._assign_cycle_defaults()
+        self._validate_cycle_integrity()
 
         if not skip_status_evaluation:
             self.status = self.evaluate_status()
@@ -195,6 +431,108 @@ class Contribution(models.Model):
         # Only auto-apply if treasurer hasn't overridden
         if self.penalty == Decimal("0.00"):
             self.penalty = suggested_penalty
+
+        super().save(*args, **kwargs)
+
+
+class MonthlyContributionRecord(models.Model):
+    STATUS_CHOICES = [
+        ("PAID", "Paid"),
+        ("PARTIAL", "Partial"),
+        ("UNPAID", "Unpaid"),
+    ]
+
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="monthly_contribution_records",
+    )
+    group = models.ForeignKey(
+        Group,
+        on_delete=models.CASCADE,
+        related_name="monthly_contribution_records",
+    )
+    financial_cycle = models.ForeignKey(
+        FinancialCycle,
+        on_delete=models.PROTECT,
+        related_name="monthly_records",
+    )
+    month = models.DateField(help_text="First day of the contribution month.")
+    expected_contribution_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
+    actual_contribution_paid = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
+    payment_date = models.DateField(null=True, blank=True)
+    outstanding_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="UNPAID")
+    source_contribution = models.ForeignKey(
+        "Contribution",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="monthly_records",
+    )
+    is_archived = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-month", "user_id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "group", "financial_cycle", "month"],
+                name="unique_monthly_contribution_record",
+            )
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.user} - {self.month.strftime('%b %Y')} "
+            f"({self.status}: {self.actual_contribution_paid}/{self.expected_contribution_amount})"
+        )
+
+    def clean(self):
+        if self.month.day != 1:
+            raise ValidationError("Month must be the first day of that month.")
+        if self.financial_cycle.group_id != self.group_id:
+            raise ValidationError("Monthly record group must match the financial cycle group.")
+        if not (self.financial_cycle.start_date <= self.month <= self.financial_cycle.end_date):
+            raise ValidationError("Month must fall within the selected financial cycle range.")
+
+    def save(self, *args, **kwargs):
+        self.month = month_start(self.month)
+        if self.financial_cycle_id and self.group_id and self.financial_cycle.group_id != self.group_id:
+            raise ValidationError("Monthly record group must match the financial cycle group.")
+        if self.financial_cycle_id and not (
+            self.financial_cycle.start_date <= self.month <= self.financial_cycle.end_date
+        ):
+            raise ValidationError("Month must fall within the selected financial cycle range.")
+        if self.expected_contribution_amount < Decimal("0.00"):
+            self.expected_contribution_amount = Decimal("0.00")
+        if self.actual_contribution_paid < Decimal("0.00"):
+            self.actual_contribution_paid = Decimal("0.00")
+
+        self.outstanding_amount = max(
+            self.expected_contribution_amount - self.actual_contribution_paid,
+            Decimal("0.00"),
+        )
+        if self.actual_contribution_paid <= Decimal("0.00"):
+            self.status = "UNPAID"
+            self.payment_date = None
+        elif self.actual_contribution_paid < self.expected_contribution_amount:
+            self.status = "PARTIAL"
+        else:
+            self.status = "PAID"
 
         super().save(*args, **kwargs)
 
@@ -243,8 +581,6 @@ class AutoSavingConfig(models.Model):
         return f"{self.user} - {self.group} ({self.amount}/month, {status})"
 
     def clean(self):
-        from django.core.exceptions import ValidationError
-        
         if self.amount < MIN_MONTHLY_SAVING:
             raise ValidationError(
                 f"Amount must be at least {MIN_MONTHLY_SAVING}"
@@ -325,6 +661,7 @@ class SavingsTarget(models.Model):
             group=self.group,
             status="PAID",
             paid_date__gte=self.start_date,
+            is_archived=False,
         ).aggregate(
             total=models.Sum("amount")
         )["total"] or Decimal("0.00")
@@ -385,6 +722,13 @@ class Investment(models.Model):
         on_delete=models.CASCADE,
         related_name="investments",
     )
+    financial_cycle = models.ForeignKey(
+        FinancialCycle,
+        on_delete=models.PROTECT,
+        related_name="investments",
+        null=True,
+        blank=True,
+    )
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     
@@ -422,6 +766,16 @@ class Investment(models.Model):
         null=True,
         related_name="investments_created",
     )
+    reviewed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reviewed_investments",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    decision_notes = models.TextField(blank=True, default="")
+    is_archived = models.BooleanField(default=False)
     
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -431,6 +785,41 @@ class Investment(models.Model):
 
     def __str__(self):
         return f"{self.name} - {self.group} ({self.status})"
+
+    def save(self, *args, **kwargs):
+        allow_pending_override = kwargs.pop("allow_pending_override", False)
+
+        if self.pk and not allow_pending_override:
+            old_status = Investment.objects.filter(pk=self.pk).values_list("status", flat=True).first()
+            if old_status == "APPROVED" and self.status == "PENDING_APPROVAL":
+                raise ValidationError(
+                    "Approved proposals cannot revert to pending without special override."
+                )
+
+        if self.group_id and self.start_date and not self.financial_cycle_id:
+            cycle, _ = FinancialCycle.get_or_create_for_date(
+                group=self.group,
+                reference_date=self.start_date,
+                created_by=self.created_by,
+                require_active=True,
+            )
+            self.financial_cycle = cycle
+
+        if self.financial_cycle_id:
+            if self.financial_cycle.group_id != self.group_id:
+                raise ValidationError("Investment cycle group must match investment group.")
+            if self.start_date and not (
+                self.financial_cycle.start_date <= self.start_date <= self.financial_cycle.end_date
+            ):
+                raise ValidationError(
+                    "Investment start date must fall within its financial cycle range."
+                )
+            if self._state.adding and self.financial_cycle.status != "ACTIVE":
+                raise ValidationError(
+                    f"Cannot create investment in a {self.financial_cycle.status.lower()} cycle."
+                )
+
+        super().save(*args, **kwargs)
 
 class InvestmentStatusLog(models.Model):
     investment = models.ForeignKey(

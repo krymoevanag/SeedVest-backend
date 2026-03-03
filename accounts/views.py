@@ -591,6 +591,8 @@ class AdminStatsView(APIView):
     permission_classes = [IsAuthenticated, IsAdminOrTreasurer]
 
     def get(self, request):
+        cycle_id = request.query_params.get("cycle_id")
+
         # Total Approved Members (including inactive ones)
         total_users = User.objects.filter(
             is_approved=True,
@@ -607,9 +609,13 @@ class AdminStatsView(APIView):
             is_approved=False
         ).count()
 
+        contribution_scope = Contribution.objects.filter(is_archived=False)
+        if cycle_id:
+            contribution_scope = contribution_scope.filter(financial_cycle_id=cycle_id)
+
         # Total Savings (Base amount paid)
         total_savings = (
-            Contribution.objects.filter(status__in=["PAID", "LATE"]).aggregate(
+            contribution_scope.filter(status__in=["PAID", "LATE"]).aggregate(
                 total=Sum("amount")
             )["total"]
             or 0.00
@@ -617,7 +623,7 @@ class AdminStatsView(APIView):
 
         # Total Penalties Paid via contributions
         paid_cont_penalties = (
-            Contribution.objects.filter(status__in=["PAID", "LATE"]).aggregate(
+            contribution_scope.filter(status__in=["PAID", "LATE"]).aggregate(
                 total=Sum("penalty")
             )["total"]
             or 0.00
@@ -626,14 +632,17 @@ class AdminStatsView(APIView):
         # Standalone penalties issued (assuming received if we count them in grand total)
         # or we might only want to count them once paid. 
         # For simplicity and to match the user's request for balance, we'll sum all.
-        standalone_penalties = Penalty.objects.filter(contribution__isnull=True).aggregate(
+        standalone_penalties = Penalty.objects.filter(
+            contribution__isnull=True,
+            is_archived=False,
+        ).aggregate(
             total=Sum("amount")
         )["total"] or 0.00
 
         total_penalties = float(paid_cont_penalties) + float(standalone_penalties)
         grand_total = float(total_savings) + float(total_penalties)
 
-        pending_contributions = Contribution.objects.filter(status="PENDING").count()
+        pending_contributions = contribution_scope.filter(status="PENDING").count()
 
         return Response(
             {

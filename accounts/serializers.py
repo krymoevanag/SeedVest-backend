@@ -220,7 +220,11 @@ class UserProfileSerializer(serializers.ModelSerializer):
         
         from finance.models import Contribution
         return (
-            Contribution.objects.filter(user=obj, status__in=["PAID", "LATE"]).aggregate(
+            Contribution.objects.filter(
+                user=obj,
+                status__in=["PAID", "LATE"],
+                is_archived=False,
+            ).aggregate(
                 total=Sum("amount")
             )["total"]
             or 0.0
@@ -233,14 +237,22 @@ class UserProfileSerializer(serializers.ModelSerializer):
         from finance.models import Contribution, Penalty
         # Penalties paid via contributions
         paid_penalties = (
-            Contribution.objects.filter(user=obj, status__in=["PAID", "LATE"]).aggregate(
+            Contribution.objects.filter(
+                user=obj,
+                status__in=["PAID", "LATE"],
+                is_archived=False,
+            ).aggregate(
                 total=Sum("penalty")
             )["total"]
             or 0.0
         )
         # Standalone penalties (all issued)
         standalone_penalties = (
-            Penalty.objects.filter(user=obj, contribution__isnull=True).aggregate(
+            Penalty.objects.filter(
+                user=obj,
+                contribution__isnull=True,
+                is_archived=False,
+            ).aggregate(
                 total=Sum("amount")
             )["total"]
             or 0.0

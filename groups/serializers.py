@@ -23,7 +23,10 @@ class GroupSerializer(serializers.ModelSerializer):
 
     def get_total_contributions(self, obj):
         return (
-            obj.finance_contributions.filter(status__in=["PAID", "LATE"]).aggregate(
+            obj.finance_contributions.filter(
+                status__in=["PAID", "LATE"],
+                is_archived=False,
+            ).aggregate(
                 total=Sum("amount")
             )["total"]
             or 0.0
