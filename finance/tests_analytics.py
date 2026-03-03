@@ -66,6 +66,7 @@ class AnalyticsTests(TestCase):
             group=self.group,
             name="Group Inv",
             amount_invested=Decimal("10000.00"),
+            expected_roi_percentage=Decimal("10.00"),
             status="ACTIVE",
             start_date=date.today(),
             created_by=self.admin
@@ -76,4 +77,4 @@ class AnalyticsTests(TestCase):
         data = service.get_group_analytics(group_id=self.group.id)
         
         self.assertEqual(data['group_metrics']['total_capital'], Decimal("10000.00"))
-        self.assertEqual(data['group_metrics']['active_members'], 2) # Admin + Member
+        self.assertEqual(data['group_metrics']['active_members'], 1)  # Member memberships only

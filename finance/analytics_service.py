@@ -186,7 +186,7 @@ class AnalyticsService:
             invs = Investment.objects.filter(
                 created_by=user,
                 status__in=['ACTIVE', 'MATURED', 'CLOSED'],
-                created_at__lte=month_date + timedelta(days=31),
+                created_at__date__lte=month_date + timedelta(days=31),
                 is_archived=False,
             )
             if group_id:
@@ -232,14 +232,14 @@ class AnalyticsService:
             inv_val = Investment.objects.filter(
                 group=group,
                 status__in=['ACTIVE', 'MATURED', 'CLOSED'],
-                created_at__lte=month_date + timedelta(days=31),
+                created_at__date__lte=month_date + timedelta(days=31),
                 is_archived=False,
             ).aggregate(total=Sum('amount_invested'))['total'] or Decimal('0.00')
             if cycle_id:
                 inv_val = Investment.objects.filter(
                     group=group,
                     status__in=['ACTIVE', 'MATURED', 'CLOSED'],
-                    created_at__lte=month_date + timedelta(days=31),
+                    created_at__date__lte=month_date + timedelta(days=31),
                     financial_cycle_id=cycle_id,
                     is_archived=False,
                 ).aggregate(total=Sum('amount_invested'))['total'] or Decimal('0.00')
