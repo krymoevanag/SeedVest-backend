@@ -12,6 +12,7 @@ from django.http import JsonResponse
 from .models import MpesaTransaction
 from .services.stk_push import stk_push
 from .services.query_status import query_stk_status
+from .services.exceptions import MpesaAPIError
 from finance.models import Contribution
 from decimal import Decimal, InvalidOperation
 
@@ -88,9 +89,18 @@ class InitiateMpesaPaymentView(APIView):
             # Safaricom expects integer amount in KES
             response = stk_push(phone, int(amount_decimal))
             logger.info(f"Safaricom Response: {json.dumps(response, indent=4)}")
-        except Exception as e:
+        except MpesaAPIError as e:
             logger.error(f"Error initiating STK Push: {str(e)}")
-            return Response({"error": "Failed to connect to Safaricom"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        except Exception as e:
+            logger.exception(f"Unexpected STK Push error: {str(e)}")
+            return Response(
+                {"error": "Failed to initiate STK Push due to an internal error."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
         if "CheckoutRequestID" in response:
             transaction = MpesaTransaction.objects.create(
@@ -100,7 +110,7 @@ class InitiateMpesaPaymentView(APIView):
                 phone_number=phone,
                 amount=amount_decimal,
                 checkout_request_id=response["CheckoutRequestID"],
-                merchant_request_id=response["MerchantRequestID"],
+                merchant_request_id=response.get("MerchantRequestID", ""),
             )
             logger.info(f"MpesaTransaction created: {transaction.checkout_request_id}")
 
@@ -165,15 +175,21 @@ class MpesaTransactionStatusView(APIView):
             
             # If still pending, try querying M-Pesa directly
             if transaction.status == "PENDING":
-                query_res = query_stk_status(checkout_request_id)
-                if query_res.get("ResultCode") == "0":
-                    transaction.status = "SUCCESS"
-                    transaction.result_desc = query_res.get("ResultDesc")
-                    transaction.save()
-                elif query_res.get("ResultCode") in ["1032", "1037"]: # Cancelled or Timeout
-                    transaction.status = "FAILED"
-                    transaction.result_desc = query_res.get("ResultDesc")
-                    transaction.save()
+                try:
+                    query_res = query_stk_status(checkout_request_id)
+                    result_code = str(query_res.get("ResultCode"))
+                    if result_code == "0":
+                        transaction.status = "SUCCESS"
+                        transaction.result_desc = query_res.get("ResultDesc")
+                        transaction.save()
+                    elif result_code in ["1032", "1037"]: # Cancelled or Timeout
+                        transaction.status = "FAILED"
+                        transaction.result_desc = query_res.get("ResultDesc")
+                        transaction.save()
+                except MpesaAPIError as e:
+                    logger.warning(
+                        f"Unable to query STK status for {checkout_request_id}: {str(e)}"
+                    )
 
             return Response({
                 "status": transaction.status,
