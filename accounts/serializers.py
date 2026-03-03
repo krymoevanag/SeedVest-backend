@@ -27,6 +27,7 @@ User = get_user_model()
 class RegisterSerializer(serializers.ModelSerializer):
     password2 = serializers.CharField(write_only=True)
     terms_accepted = serializers.BooleanField(write_only=True)
+    group_id = serializers.IntegerField(write_only=True, required=False)
 
     class Meta:
         model = User
@@ -38,6 +39,7 @@ class RegisterSerializer(serializers.ModelSerializer):
             "password",
             "password2",
             "terms_accepted",
+            "group_id",
         )
         extra_kwargs = {
             "password": {"write_only": True},
@@ -51,6 +53,13 @@ class RegisterSerializer(serializers.ModelSerializer):
 
         if attrs["password"] != attrs["password2"]:
             raise serializers.ValidationError({"password": "Passwords do not match."})
+
+        group_id = attrs.get("group_id")
+        if group_id is not None:
+            try:
+                attrs["group_obj"] = Group.objects.get(pk=group_id)
+            except Group.DoesNotExist:
+                raise serializers.ValidationError({"group_id": "Selected group does not exist."})
         
         # Enforce strong password validation
         try:
@@ -64,6 +73,8 @@ class RegisterSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         validated_data.pop("password2")
         validated_data.pop("terms_accepted")
+        group = validated_data.pop("group_obj", None)
+        validated_data.pop("group_id", None)
 
         user = User.objects.create_user(
             email=validated_data["email"],
@@ -76,6 +87,13 @@ class RegisterSerializer(serializers.ModelSerializer):
             is_active=False,
             application_status="PENDING",
         )
+
+        if group is not None:
+            Membership.objects.create(
+                user=user,
+                group=group,
+                role="MEMBER",
+            )
 
         uid = urlsafe_base64_encode(force_bytes(user.pk))
         token = account_activation_token.make_token(user)
@@ -98,6 +116,12 @@ class AdminUserRegistrationSerializer(serializers.ModelSerializer):
     Bypasses standard activation flow and auto-approves.
     """
     role = serializers.ChoiceField(choices=User.ROLE_CHOICES, default='MEMBER')
+    group_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        required=False,
+        allow_empty=True,
+        write_only=True,
+    )
 
     class Meta:
         model = User
@@ -107,9 +131,22 @@ class AdminUserRegistrationSerializer(serializers.ModelSerializer):
             "last_name",
             "phone_number",
             "role",
+            "group_ids",
         )
 
+    def validate_group_ids(self, value):
+        if not value:
+            return value
+        existing = set(Group.objects.filter(id__in=value).values_list("id", flat=True))
+        missing = [group_id for group_id in value if group_id not in existing]
+        if missing:
+            raise serializers.ValidationError(
+                f"Invalid group id(s): {', '.join(str(item) for item in missing)}"
+            )
+        return value
+
     def create(self, validated_data):
+        group_ids = validated_data.pop("group_ids", [])
         # Generate a random temporary password or handle password differently?
         # For now, let's create without password and user will need to reset it,
         # or we set a default one. Usually, for admin-added users, we might want
@@ -131,6 +168,16 @@ class AdminUserRegistrationSerializer(serializers.ModelSerializer):
         # For now, let's just create the user. Standard approval logic
         # (generating membership number) should also be applied if needed.
         user.approve_member(actor=self.context['request'].user)
+
+        if group_ids:
+            membership_role = "TREASURER" if user.role == "TREASURER" else "MEMBER"
+            groups = Group.objects.filter(id__in=group_ids)
+            for group in groups:
+                Membership.objects.get_or_create(
+                    user=user,
+                    group=group,
+                    defaults={"role": membership_role},
+                )
         
         return user
 

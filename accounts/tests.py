@@ -9,6 +9,7 @@ from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
 from .tokens import account_activation_token
 from .models import AuditLog
+from groups.models import Group, Membership
 
 User = get_user_model()
 
@@ -48,6 +49,53 @@ class RegistrationTests(APITestCase):
         response = self.client.post(url, data)
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("terms_accepted", response.data)
+
+    def test_user_registration_with_group_creates_membership(self):
+        treasurer = User.objects.create_user(
+            email="treasurer@test.com",
+            password="Treasurer123!",
+            role="TREASURER",
+            is_active=True,
+            is_approved=True,
+        )
+        group = Group.objects.create(
+            name="Registration Group",
+            description="Group for registration test",
+            treasurer=treasurer,
+        )
+
+        url = reverse("register")
+        data = {
+            "email": "member3@test.com",
+            "first_name": "Member",
+            "last_name": "Three",
+            "password": "TestPass123!",
+            "password2": "TestPass123!",
+            "terms_accepted": True,
+            "group_id": group.id,
+        }
+        response = self.client.post(url, data)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        user = User.objects.get(email="member3@test.com")
+        self.assertTrue(
+            Membership.objects.filter(user=user, group=group, role="MEMBER").exists()
+        )
+
+    def test_user_registration_fails_with_invalid_group(self):
+        url = reverse("register")
+        data = {
+            "email": "member4@test.com",
+            "first_name": "Member",
+            "last_name": "Four",
+            "password": "TestPass123!",
+            "password2": "TestPass123!",
+            "terms_accepted": True,
+            "group_id": 999999,
+        }
+        response = self.client.post(url, data)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("group_id", response.data)
 
 
 # -------------------------

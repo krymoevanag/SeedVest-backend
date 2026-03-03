@@ -1,4 +1,5 @@
-from datetime import date
+from datetime import date, timedelta
+from decimal import Decimal
 
 from django.urls import reverse
 from rest_framework import status
@@ -279,3 +280,120 @@ class AdminAddContributionTests(APITestCase):
             Penalty.objects.filter(user=self.member, is_archived=True).count(),
             1,
         )
+
+
+class AdminMemberFinancialOversightTests(APITestCase):
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            email="oversight-admin@test.com",
+            password="AdminPass123!",
+            role="ADMIN",
+            is_active=True,
+            is_approved=True,
+        )
+        self.member_one = User.objects.create_user(
+            email="member-one@test.com",
+            password="MemberPass123!",
+            role="MEMBER",
+            is_active=True,
+            is_approved=True,
+            membership_number="MBR-2026-0101",
+            first_name="Member",
+            last_name="One",
+        )
+        self.member_two = User.objects.create_user(
+            email="member-two@test.com",
+            password="MemberPass123!",
+            role="MEMBER",
+            is_active=True,
+            is_approved=True,
+            membership_number="MBR-2026-0102",
+            first_name="Member",
+            last_name="Two",
+        )
+        self.group = Group.objects.create(
+            name="Pioneers",
+            description="Oversight test group",
+            treasurer=self.admin,
+        )
+        Membership.objects.create(user=self.member_one, group=self.group, role="MEMBER")
+        Membership.objects.create(user=self.member_two, group=self.group, role="MEMBER")
+
+        today = date.today()
+        self.member_one_paid = Contribution.objects.create(
+            user=self.member_one,
+            group=self.group,
+            amount=Decimal("1000.00"),
+            expected_amount=Decimal("1000.00"),
+            due_date=today - timedelta(days=10),
+            paid_date=today - timedelta(days=10),
+        )
+        self.member_one_pending = Contribution.objects.create(
+            user=self.member_one,
+            group=self.group,
+            amount=Decimal("700.00"),
+            expected_amount=Decimal("700.00"),
+            due_date=today + timedelta(days=7),
+        )
+        self.member_two_late = Contribution.objects.create(
+            user=self.member_two,
+            group=self.group,
+            amount=Decimal("800.00"),
+            expected_amount=Decimal("800.00"),
+            due_date=today - timedelta(days=15),
+            paid_date=today - timedelta(days=5),
+        )
+        Penalty.objects.create(
+            user=self.member_one,
+            contribution=self.member_one_pending,
+            amount=Decimal("120.00"),
+            reason="Missed target",
+            applied_by=self.admin,
+        )
+
+        refresh = RefreshToken.for_user(self.admin)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+    def test_admin_member_list_returns_all_selected_group_members_with_metrics(self):
+        response = self.client.get(
+            reverse("admin-member-list"),
+            {"group_id": self.group.id},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 2)
+
+        by_user_id = {item["user_id"]: item for item in response.data}
+        member_one_payload = by_user_id[self.member_one.id]
+        member_two_payload = by_user_id[self.member_two.id]
+
+        self.assertEqual(member_one_payload["membership_number"], "MBR-2026-0101")
+        self.assertEqual(member_one_payload["total_contributions_count"], 2)
+        self.assertEqual(member_one_payload["paid_contributions_count"], 1)
+        self.assertEqual(member_one_payload["pending_contributions_count"], 1)
+        self.assertEqual(float(member_one_payload["savings_balance"]), 1000.0)
+        self.assertEqual(float(member_one_payload["expected_total"]), 1700.0)
+        self.assertEqual(float(member_one_payload["outstanding_total"]), 700.0)
+        self.assertEqual(float(member_one_payload["penalties_balance"]), 120.0)
+        self.assertEqual(
+            member_one_payload["last_contribution_date"],
+            self.member_one_pending.due_date.isoformat(),
+        )
+        self.assertEqual(float(member_one_payload["last_contribution_amount"]), 700.0)
+
+        self.assertEqual(member_two_payload["membership_number"], "MBR-2026-0102")
+        self.assertEqual(member_two_payload["total_contributions_count"], 1)
+        self.assertEqual(member_two_payload["paid_contributions_count"], 1)
+        self.assertEqual(float(member_two_payload["savings_balance"]), 800.0)
+
+    def test_admin_group_summary_uses_group_scoped_financial_totals(self):
+        response = self.client.get(
+            reverse("admin-group-summary"),
+            {"group_id": self.group.id},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        stats = response.data["stats"]
+        self.assertEqual(stats["member_count"], 2)
+        self.assertEqual(float(stats["total_savings"]), 1800.0)
+        self.assertEqual(float(stats["total_penalties"]), 120.0)

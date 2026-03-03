@@ -34,14 +34,29 @@ class GroupSerializer(serializers.ModelSerializer):
 
 
 class MembershipSerializer(serializers.ModelSerializer):
+    user_email = serializers.EmailField(source="user.email", read_only=True)
+    group_name = serializers.CharField(source="group.name", read_only=True)
+
     class Meta:
         model = Membership
         fields = (
             "id",
             "user",
+            "user_email",
             "group",
+            "group_name",
             "role",
             "is_auto_penalty_enabled",
             "joined_at",
         )
         read_only_fields = ("joined_at",)
+
+    def validate(self, attrs):
+        user = attrs.get("user") or getattr(self.instance, "user", None)
+        group = attrs.get("group") or getattr(self.instance, "group", None)
+        if self.instance is None and user and group:
+            if Membership.objects.filter(user=user, group=group).exists():
+                raise serializers.ValidationError(
+                    {"detail": "User is already assigned to this group."}
+                )
+        return attrs

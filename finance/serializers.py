@@ -747,13 +747,43 @@ class AdminMembershipSerializer(serializers.ModelSerializer):
     user_id = serializers.IntegerField(source="user.id")
     full_name = serializers.SerializerMethodField()
     email = serializers.EmailField(source="user.email")
-    membership_number = serializers.CharField(source="user.membership_number")
+    membership_number = serializers.CharField(
+        source="user.membership_number",
+        allow_null=True,
+        allow_blank=True,
+    )
     group_name = serializers.CharField(source="group.name")
     savings_balance = serializers.DecimalField(
-        max_digits=10, decimal_places=2, read_only=True
+        max_digits=12,
+        decimal_places=2,
+        read_only=True,
     )
     penalties_balance = serializers.DecimalField(
-        max_digits=10, decimal_places=2, read_only=True
+        max_digits=12,
+        decimal_places=2,
+        read_only=True,
+    )
+    total_contributions_count = serializers.IntegerField(read_only=True)
+    paid_contributions_count = serializers.IntegerField(read_only=True)
+    pending_contributions_count = serializers.IntegerField(read_only=True)
+    overdue_contributions_count = serializers.IntegerField(read_only=True)
+    rejected_contributions_count = serializers.IntegerField(read_only=True)
+    expected_total = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        read_only=True,
+    )
+    outstanding_total = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        read_only=True,
+    )
+    last_contribution_date = serializers.DateField(read_only=True, allow_null=True)
+    last_contribution_amount = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        read_only=True,
+        allow_null=True,
     )
 
     class Meta:
@@ -769,6 +799,15 @@ class AdminMembershipSerializer(serializers.ModelSerializer):
             "role",
             "savings_balance",
             "penalties_balance",
+            "total_contributions_count",
+            "paid_contributions_count",
+            "pending_contributions_count",
+            "overdue_contributions_count",
+            "rejected_contributions_count",
+            "expected_total",
+            "outstanding_total",
+            "last_contribution_date",
+            "last_contribution_amount",
             "joined_at",
         ]
 

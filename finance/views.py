@@ -3,7 +3,21 @@ from datetime import date
 from io import StringIO
 
 from django.db import models, transaction
-from django.db.models import Sum, Q, Value, Count, F
+from django.db.models import (
+    Sum,
+    Q,
+    Value,
+    Count,
+    Max,
+    Case,
+    When,
+    F,
+    OuterRef,
+    Subquery,
+    DecimalField,
+    IntegerField,
+    DateField,
+)
 from django.db.models.functions import Coalesce
 from decimal import Decimal
 from rest_framework import serializers, status, viewsets, filters
@@ -1075,7 +1089,7 @@ class AdminMemberListView(ListAPIView):
         if user.role not in ("ADMIN", "TREASURER") and not user.is_superuser:
             raise PermissionDenied("Only admins and treasurers can view this list.")
 
-        queryset = Membership.objects.all().select_related("user", "group")
+        queryset = Membership.objects.select_related("user", "group")
 
         # Role-based filtering
         if not user.is_superuser and user.role != "ADMIN":
@@ -1089,32 +1103,162 @@ class AdminMemberListView(ListAPIView):
         if group_id:
             queryset = queryset.filter(group_id=group_id)
 
-        # Optimization: Aggregate group-specific balances in one query
-        queryset = queryset.annotate(
-            savings_balance=Coalesce(
-                Sum(
-                    "group__finance_contributions__amount",
-                    filter=Q(
-                        group__finance_contributions__user=F("user"),
-                        group__finance_contributions__status__in=["PAID", "LATE"],
-                        group__finance_contributions__is_archived=False,
-                    )
-                ),
-                Value(0, output_field=models.DecimalField())
-            ),
-            penalties_balance=Coalesce(
-                Sum(
-                    "user__penalties__amount",
-                    filter=Q(
-                        user__penalties__contribution__group=F("group"),
-                        user__penalties__is_archived=False
-                    )
-                ),
-                Value(0, output_field=models.DecimalField())
-            )
+        cycle_id = self.request.query_params.get("cycle_id")
+
+        contribution_filter = Q(
+            user_id=OuterRef("user_id"),
+            group_id=OuterRef("group_id"),
+            is_archived=False,
+        )
+        if cycle_id:
+            contribution_filter &= Q(financial_cycle_id=cycle_id)
+        scoped_contributions = Contribution.objects.filter(contribution_filter)
+
+        scoped_penalties_filter = Q(
+            user_id=OuterRef("user_id"),
+            is_archived=False,
+            contribution__group_id=OuterRef("group_id"),
+            contribution__is_archived=False,
+        )
+        if cycle_id:
+            scoped_penalties_filter &= Q(contribution__financial_cycle_id=cycle_id)
+        scoped_penalties = Penalty.objects.filter(scoped_penalties_filter)
+
+        expected_amount_expr = Case(
+            When(expected_amount__gt=0, then=F("expected_amount")),
+            default=F("amount"),
+            output_field=DecimalField(max_digits=12, decimal_places=2),
         )
 
-        return queryset
+        savings_balance_subquery = (
+            scoped_contributions.filter(status__in=["PAID", "LATE"])
+            .values("user_id")
+            .annotate(total=Sum("amount"))
+            .values("total")[:1]
+        )
+        penalties_balance_subquery = (
+            scoped_penalties.values("user_id")
+            .annotate(total=Sum("amount"))
+            .values("total")[:1]
+        )
+        total_contributions_subquery = (
+            scoped_contributions.values("user_id")
+            .annotate(total=Count("id"))
+            .values("total")[:1]
+        )
+        paid_contributions_subquery = (
+            scoped_contributions.filter(status__in=["PAID", "LATE"])
+            .values("user_id")
+            .annotate(total=Count("id"))
+            .values("total")[:1]
+        )
+        pending_contributions_subquery = (
+            scoped_contributions.filter(status="PENDING")
+            .values("user_id")
+            .annotate(total=Count("id"))
+            .values("total")[:1]
+        )
+        overdue_contributions_subquery = (
+            scoped_contributions.filter(status="OVERDUE")
+            .values("user_id")
+            .annotate(total=Count("id"))
+            .values("total")[:1]
+        )
+        rejected_contributions_subquery = (
+            scoped_contributions.filter(status="REJECTED")
+            .values("user_id")
+            .annotate(total=Count("id"))
+            .values("total")[:1]
+        )
+        expected_total_subquery = (
+            scoped_contributions.values("user_id")
+            .annotate(total=Sum(expected_amount_expr))
+            .values("total")[:1]
+        )
+        outstanding_total_subquery = (
+            scoped_contributions.values("user_id")
+            .annotate(
+                total=Sum(
+                    Case(
+                        When(status__in=["PAID", "LATE"], then=Value(Decimal("0.00"))),
+                        default=expected_amount_expr,
+                        output_field=DecimalField(max_digits=12, decimal_places=2),
+                    )
+                )
+            )
+            .values("total")[:1]
+        )
+        last_contribution_date_subquery = (
+            scoped_contributions.values("user_id")
+            .annotate(last_date=Max("due_date"))
+            .values("last_date")[:1]
+        )
+        last_contribution_amount_subquery = scoped_contributions.order_by(
+            "-due_date",
+            "-created_at",
+            "-id",
+        ).values("amount")[:1]
+
+        queryset = queryset.annotate(
+            savings_balance=Coalesce(
+                Subquery(
+                    savings_balance_subquery,
+                    output_field=DecimalField(max_digits=12, decimal_places=2),
+                ),
+                Value(Decimal("0.00"), output_field=DecimalField(max_digits=12, decimal_places=2)),
+            ),
+            penalties_balance=Coalesce(
+                Subquery(
+                    penalties_balance_subquery,
+                    output_field=DecimalField(max_digits=12, decimal_places=2),
+                ),
+                Value(Decimal("0.00"), output_field=DecimalField(max_digits=12, decimal_places=2)),
+            ),
+            total_contributions_count=Coalesce(
+                Subquery(total_contributions_subquery, output_field=IntegerField()),
+                Value(0, output_field=IntegerField()),
+            ),
+            paid_contributions_count=Coalesce(
+                Subquery(paid_contributions_subquery, output_field=IntegerField()),
+                Value(0, output_field=IntegerField()),
+            ),
+            pending_contributions_count=Coalesce(
+                Subquery(pending_contributions_subquery, output_field=IntegerField()),
+                Value(0, output_field=IntegerField()),
+            ),
+            overdue_contributions_count=Coalesce(
+                Subquery(overdue_contributions_subquery, output_field=IntegerField()),
+                Value(0, output_field=IntegerField()),
+            ),
+            rejected_contributions_count=Coalesce(
+                Subquery(rejected_contributions_subquery, output_field=IntegerField()),
+                Value(0, output_field=IntegerField()),
+            ),
+            expected_total=Coalesce(
+                Subquery(
+                    expected_total_subquery,
+                    output_field=DecimalField(max_digits=12, decimal_places=2),
+                ),
+                Value(Decimal("0.00"), output_field=DecimalField(max_digits=12, decimal_places=2)),
+            ),
+            outstanding_total=Coalesce(
+                Subquery(
+                    outstanding_total_subquery,
+                    output_field=DecimalField(max_digits=12, decimal_places=2),
+                ),
+                Value(Decimal("0.00"), output_field=DecimalField(max_digits=12, decimal_places=2)),
+            ),
+            last_contribution_date=Subquery(
+                last_contribution_date_subquery,
+                output_field=DateField(),
+            ),
+            last_contribution_amount=Subquery(
+                last_contribution_amount_subquery,
+                output_field=DecimalField(max_digits=12, decimal_places=2),
+            ),
+        )
+
+        return queryset.order_by("group__name", "user__first_name", "user__last_name", "user__email")
 
 
 class AdminGroupSummaryView(APIView):
@@ -1126,6 +1270,7 @@ class AdminGroupSummaryView(APIView):
     def get(self, request):
         user = request.user
         group_id = request.query_params.get("group_id")
+        cycle_id = request.query_params.get("cycle_id")
 
         if not group_id:
             return Response({"detail": "group_id is required."}, status=status.HTTP_400_BAD_REQUEST)
@@ -1142,27 +1287,32 @@ class AdminGroupSummaryView(APIView):
             if user.role == "MEMBER":
                  return Response({"detail": "Access denied."}, status=status.HTTP_403_FORBIDDEN)
 
-        stats = Membership.objects.filter(group=group).aggregate(
-            member_count=Count("id"),
-            total_savings=Coalesce(
-                Sum(
-                    "group__finance_contributions__amount",
-                    filter=Q(
-                        group__finance_contributions__status__in=["PAID", "LATE"],
-                        group__finance_contributions__is_archived=False,
-                    ),
-                ),
-                Value(0, output_field=models.DecimalField())
-            ),
-            total_penalties=Coalesce(
-                Sum("user__penalties__amount", filter=Q(user__penalties__is_archived=False)),
-                Value(0, output_field=models.DecimalField())
-            )
+        memberships = Membership.objects.filter(group=group)
+
+        contributions = Contribution.objects.filter(group=group, is_archived=False)
+        if cycle_id:
+            contributions = contributions.filter(financial_cycle_id=cycle_id)
+
+        penalties = Penalty.objects.filter(
+            is_archived=False,
+            contribution__group=group,
+            contribution__is_archived=False,
         )
+        if cycle_id:
+            penalties = penalties.filter(contribution__financial_cycle_id=cycle_id)
+
+        stats = {
+            "member_count": memberships.count(),
+            "total_savings": contributions.filter(status__in=["PAID", "LATE"]).aggregate(
+                total=Sum("amount")
+            )["total"] or Decimal("0.00"),
+            "total_penalties": penalties.aggregate(total=Sum("amount"))["total"] or Decimal("0.00"),
+        }
 
         return Response({
             "group_id": group.id,
             "group_name": group.name,
+            "cycle_id": int(cycle_id) if cycle_id else None,
             "stats": stats
         })
 
