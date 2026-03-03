@@ -397,3 +397,59 @@ class AdminMemberFinancialOversightTests(APITestCase):
         self.assertEqual(stats["member_count"], 2)
         self.assertEqual(float(stats["total_savings"]), 1800.0)
         self.assertEqual(float(stats["total_penalties"]), 120.0)
+
+
+class PenaltyEndpointTests(APITestCase):
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            email="penalty-admin@test.com",
+            password="AdminPass123!",
+            role="ADMIN",
+            is_active=True,
+            is_approved=True,
+        )
+        self.member = User.objects.create_user(
+            email="penalty-member@test.com",
+            password="MemberPass123!",
+            role="MEMBER",
+            first_name="Penalty",
+            last_name="Member",
+            is_active=True,
+            is_approved=True,
+        )
+        self.group = Group.objects.create(
+            name="Penalty Group",
+            description="Penalty test group",
+            treasurer=self.admin,
+        )
+        Membership.objects.create(user=self.member, group=self.group, role="MEMBER")
+
+    def test_penalty_list_includes_status_field(self):
+        contribution = Contribution.objects.create(
+            user=self.member,
+            group=self.group,
+            amount=Decimal("1200.00"),
+            due_date=date.today(),
+            status="PENDING",
+        )
+        Penalty.objects.create(
+            user=self.member,
+            contribution=contribution,
+            amount=Decimal("250.00"),
+            reason="Missed monthly target",
+            applied_by=self.admin,
+        )
+
+        refresh = RefreshToken.for_user(self.admin)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+        response = self.client.get(reverse("penalty-list"))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertGreaterEqual(len(response.data), 1)
+        self.assertIn("status", response.data[0])
+        self.assertIn("user_name", response.data[0])
+        self.assertIn("group_name", response.data[0])
+        self.assertEqual(response.data[0]["status"], "UNPAID")
+        self.assertEqual(response.data[0]["user_name"], "Penalty Member")
+        self.assertEqual(response.data[0]["group_name"], "Penalty Group")

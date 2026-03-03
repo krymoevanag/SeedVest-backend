@@ -139,18 +139,57 @@ class ManualContributionProposalSerializer(serializers.Serializer):
 
 
 class PenaltySerializer(serializers.ModelSerializer):
+    status = serializers.SerializerMethodField()
+    user_name = serializers.SerializerMethodField()
+    group_name = serializers.SerializerMethodField()
+
     class Meta:
         model = Penalty
         fields = (
             "id",
             "user",
+            "user_name",
             "contribution",
+            "group_name",
             "amount",
             "reason",
+            "status",
             "applied_by",
             "created_at",
         )
         read_only_fields = ("created_at", "applied_by")
+
+    def get_status(self, obj):
+        contribution = obj.contribution
+        if not contribution:
+            return "UNPAID"
+
+        if contribution.status in ("PAID", "LATE"):
+            return "PAID"
+
+        return "UNPAID"
+
+    def get_user_name(self, obj):
+        user = obj.user
+        if not user:
+            return None
+
+        full_name = f"{user.first_name} {user.last_name}".strip()
+        return full_name or user.email
+
+    def get_group_name(self, obj):
+        if obj.contribution and obj.contribution.group:
+            return obj.contribution.group.name
+
+        user = obj.user
+        if not user:
+            return None
+
+        membership = user.membership_set.select_related("group").first()
+        if membership and membership.group:
+            return membership.group.name
+
+        return None
 
 
 class InsightSerializer(serializers.Serializer):

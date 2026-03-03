@@ -237,24 +237,32 @@ class ContributionViewSet(viewsets.ModelViewSet):
 
 class PenaltyViewSet(viewsets.ModelViewSet):
     serializer_class = PenaltySerializer
+
     def get_queryset(self):
         user = self.request.user
+        base_queryset = Penalty.objects.select_related(
+            "user",
+            "applied_by",
+            "contribution__group",
+        ).prefetch_related(
+            "user__membership_set__group",
+        )
 
         if user.is_superuser or user.role == "ADMIN":
-            return Penalty.objects.all()
+            return base_queryset
 
         if user.role == "TREASURER":
             # Penalties in groups where the user is treasurer
             from django.db import models
-            return Penalty.objects.filter(
+            return base_queryset.filter(
                 models.Q(contribution__group__treasurer=user) |
                 models.Q(user__membership__group__treasurer=user)
             ).distinct()
 
         if user.role == "MEMBER":
-            return Penalty.objects.filter(user=user, is_archived=False)
+            return base_queryset.filter(user=user, is_archived=False)
 
-        return Penalty.objects.none()
+        return base_queryset.none()
 
     def perform_create(self, serializer):
         actor = self.request.user

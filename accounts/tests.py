@@ -4,6 +4,7 @@ from rest_framework.test import APITestCase
 from rest_framework import status
 from django.contrib.auth import get_user_model
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
+from django.db import connection
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
@@ -636,6 +637,37 @@ class DeleteMemberTests(APITestCase):
                 notes__contains=self.member.email,
             ).exists()
         )
+
+    def test_admin_delete_cleans_legacy_authtoken_rows(self):
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS authtoken_token (
+                    key varchar(40) NOT NULL PRIMARY KEY,
+                    created datetime NULL,
+                    user_id integer NOT NULL
+                        REFERENCES accounts_user (id)
+                        DEFERRABLE INITIALLY DEFERRED
+                )
+                """
+            )
+            cursor.execute(
+                "INSERT INTO authtoken_token (key, created, user_id) VALUES (%s, CURRENT_TIMESTAMP, %s)",
+                [f"legacy-{self.member.id}", self.member.id],
+            )
+
+        admin_refresh = RefreshToken.for_user(self.admin)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {admin_refresh.access_token}")
+
+        response = self.client.delete(reverse("user-detail", args=[self.member.id]))
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(User.objects.filter(id=self.member.id).exists())
+
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM authtoken_token WHERE user_id = %s", [self.member.id])
+            count = cursor.fetchone()[0]
+        self.assertEqual(count, 0)
 
     def test_member_cannot_delete_another_member(self):
         other_member = User.objects.create_user(

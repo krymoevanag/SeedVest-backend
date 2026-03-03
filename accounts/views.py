@@ -8,6 +8,7 @@ from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.core.exceptions import ValidationError
 from django.core.mail import EmailMultiAlternatives
 from django.db.models import Sum
+from django.db import connection
 from django.shortcuts import render
 from django.template.loader import render_to_string
 from django.utils.encoding import force_bytes, force_str
@@ -55,6 +56,58 @@ from .tokens import account_activation_token
 # ====================================================
 User = get_user_model()
 token_generator = PasswordResetTokenGenerator()
+
+
+def cleanup_unmanaged_user_foreign_keys(user_id):
+    """
+    Remove/neutralize references from legacy tables that are not managed by
+    installed Django apps. Those foreign keys are not handled by Django's
+    model deletion collector.
+    """
+    from django.apps import apps
+
+    user_table = User._meta.db_table
+    managed_tables = {
+        model._meta.db_table
+        for model in apps.get_models(include_auto_created=True)
+    }
+
+    with connection.cursor() as cursor:
+        quote_name = connection.ops.quote_name
+        all_tables = set(connection.introspection.table_names(cursor))
+        legacy_tables = all_tables - managed_tables
+
+        for table in sorted(legacy_tables):
+            constraints = connection.introspection.get_constraints(cursor, table)
+            if not constraints:
+                continue
+
+            column_descriptions = connection.introspection.get_table_description(cursor, table)
+            nullable_by_column = {
+                column.name: column.null_ok
+                for column in column_descriptions
+            }
+
+            for metadata in constraints.values():
+                foreign_key = metadata.get("foreign_key")
+                columns = metadata.get("columns") or []
+                if not foreign_key or foreign_key[0] != user_table or len(columns) != 1:
+                    continue
+
+                column = columns[0]
+                quoted_table = quote_name(table)
+                quoted_column = quote_name(column)
+
+                if nullable_by_column.get(column, False):
+                    cursor.execute(
+                        f"UPDATE {quoted_table} SET {quoted_column} = NULL WHERE {quoted_column} = %s",
+                        [user_id],
+                    )
+                else:
+                    cursor.execute(
+                        f"DELETE FROM {quoted_table} WHERE {quoted_column} = %s",
+                        [user_id],
+                    )
 
 
 # ====================================================
@@ -358,6 +411,7 @@ class UserViewSet(viewsets.ModelViewSet):
             )
 
             # 5. Now safe to delete — remaining FKs (contributions, notifications, memberships) are CASCADE
+            cleanup_unmanaged_user_foreign_keys(instance.id)
             instance.delete()
 
 
@@ -374,6 +428,7 @@ class UserViewSet(viewsets.ModelViewSet):
             notes="User deleted their own account."
         )
         
+        cleanup_unmanaged_user_foreign_keys(user.id)
         user.delete()
         return Response(
             {"message": "Account deleted successfully."},
