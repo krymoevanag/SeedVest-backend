@@ -145,6 +145,31 @@ SeedVest Team
     )
 
 
+def send_admin_account_setup_email(user, setup_link):
+    subject = "Activate your SeedVest account"
+    message = f"""
+Dear {user.first_name or "Member"},
+
+An administrator has created your SeedVest account.
+
+To activate your account and set your password, open the link below:
+
+{setup_link}
+
+If you did not expect this email, please contact support.
+
+Best regards,
+SeedVest Team
+"""
+    send_mail(
+        subject,
+        message,
+        settings.DEFAULT_FROM_EMAIL,
+        [user.email],
+        fail_silently=True,
+    )
+
+
 def send_investment_status_email(user, investment_name, amount, status, admin_notes=""):
     subject = f"Investment Proposal Update: {status}"
     message = f"""

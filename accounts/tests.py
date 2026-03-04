@@ -150,6 +150,150 @@ class ApprovalTests(APITestCase):
 
 
 # -------------------------
+# Admin Registration Invite Flow Tests
+# -------------------------
+class AdminRegistrationInviteFlowTests(APITestCase):
+
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            email="invite-admin@test.com",
+            password="AdminInvite123!",
+            role="ADMIN",
+            is_active=True,
+            is_approved=True,
+            application_status="APPROVED",
+        )
+        refresh = RefreshToken.for_user(self.admin)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+    @patch("accounts.serializers.send_admin_account_setup_email")
+    def test_admin_register_sends_setup_email_and_keeps_user_inactive(self, mock_send):
+        response = self.client.post(
+            reverse("user-admin-register"),
+            {
+                "email": "invited-member@test.com",
+                "first_name": "Invited",
+                "last_name": "Member",
+                "phone_number": "+254700000001",
+                "role": "MEMBER",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        user = User.objects.get(email="invited-member@test.com")
+        self.assertTrue(user.is_approved)
+        self.assertEqual(user.application_status, "APPROVED")
+        self.assertFalse(user.is_active)
+        self.assertIsNotNone(user.membership_number)
+
+        self.assertTrue(mock_send.called)
+        args, _kwargs = mock_send.call_args
+        self.assertEqual(args[0].id, user.id)
+        self.assertIn("/reset-password/", args[1])
+
+    def test_password_reset_confirm_activates_approved_inactive_user(self):
+        user = User.objects.create_user(
+            email="inactive-approved@test.com",
+            password=None,
+            first_name="Inactive",
+            last_name="Approved",
+            role="MEMBER",
+            is_active=False,
+            is_approved=True,
+            application_status="APPROVED",
+        )
+
+        uid = urlsafe_base64_encode(force_bytes(user.pk))
+        token = PasswordResetTokenGenerator().make_token(user)
+
+        response = self.client.post(
+            reverse("password-reset-confirm"),
+            {
+                "uid": uid,
+                "token": token,
+                "new_password": "NewStrongPass123!",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        user.refresh_from_db()
+        self.assertTrue(user.is_active)
+        self.assertTrue(user.check_password("NewStrongPass123!"))
+
+    @patch("accounts.views.send_admin_account_setup_email")
+    def test_admin_can_resend_setup_link_for_invited_user(self, mock_send):
+        user = User.objects.create_user(
+            email="resend-invite@test.com",
+            password=None,
+            first_name="Resend",
+            last_name="Invite",
+            role="MEMBER",
+            is_active=False,
+            is_approved=True,
+            application_status="APPROVED",
+        )
+
+        response = self.client.post(
+            reverse("user-resend-setup-link", args=[user.id]),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("message", response.data)
+        self.assertTrue(mock_send.called)
+        args, _kwargs = mock_send.call_args
+        self.assertEqual(args[0].id, user.id)
+        self.assertIn("/reset-password/", args[1])
+
+    @patch("accounts.views.send_admin_account_setup_email")
+    def test_resend_setup_link_rejects_active_user(self, mock_send):
+        user = User.objects.create_user(
+            email="already-active@test.com",
+            password="AlreadyActive123!",
+            first_name="Already",
+            last_name="Active",
+            role="MEMBER",
+            is_active=True,
+            is_approved=True,
+            application_status="APPROVED",
+        )
+
+        response = self.client.post(
+            reverse("user-resend-setup-link", args=[user.id]),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("error", response.data)
+        self.assertFalse(mock_send.called)
+
+    @patch("accounts.views.send_admin_account_setup_email")
+    def test_resend_setup_link_rejects_non_approved_user(self, mock_send):
+        user = User.objects.create_user(
+            email="under-review@test.com",
+            password=None,
+            first_name="Under",
+            last_name="Review",
+            role="MEMBER",
+            is_active=False,
+            is_approved=False,
+            application_status="UNDER_REVIEW",
+        )
+
+        response = self.client.post(
+            reverse("user-resend-setup-link", args=[user.id]),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("error", response.data)
+        self.assertFalse(mock_send.called)
+
+
+# -------------------------
 # Membership Activation Tests
 # -------------------------
 class ActivationTests(APITestCase):

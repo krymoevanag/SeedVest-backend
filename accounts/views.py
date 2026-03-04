@@ -9,6 +9,7 @@ from django.core.exceptions import ValidationError
 from django.core.mail import EmailMultiAlternatives
 from django.db.models import Sum
 from django.db import connection
+from django.urls import reverse
 from django.shortcuts import render
 from django.template.loader import render_to_string
 from django.utils.encoding import force_bytes, force_str
@@ -35,6 +36,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 # ====================================================
 from finance.models import Contribution, Penalty
 from .emails import (
+    send_admin_account_setup_email,
     send_membership_rejected_email,
     send_role_updated_email,
 )
@@ -292,6 +294,37 @@ class UserViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_201_CREATED
             )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=["post"], url_path="resend-setup-link")
+    def resend_setup_link(self, request, pk=None):
+        user = self.get_object()
+
+        if user.is_active:
+            return Response(
+                {"error": "User account is already active."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if user.application_status != "APPROVED":
+            return Response(
+                {"error": "Setup link can only be sent to approved users."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        uid = urlsafe_base64_encode(force_bytes(user.pk))
+        token = token_generator.make_token(user)
+        reset_path = reverse(
+            "password_reset_page",
+            kwargs={"uid": uid, "token": token},
+        )
+        setup_link = request.build_absolute_uri(reset_path)
+
+        send_admin_account_setup_email(user, setup_link)
+
+        return Response(
+            {"message": "Setup link sent successfully."},
+            status=status.HTTP_200_OK,
+        )
 
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):
@@ -600,7 +633,15 @@ class PasswordResetConfirmView(APIView):
             )
 
         user.set_password(new_password)
-        user.save(update_fields=["password"])
+        update_fields = ["password"]
+
+        # Admin-invited users are created as approved but inactive until they set
+        # a password through the secure reset/activation link.
+        if not user.is_active and user.application_status == "APPROVED":
+            user.is_active = True
+            update_fields.append("is_active")
+
+        user.save(update_fields=update_fields)
 
         return Response(
             {"detail": "Password reset successful."},

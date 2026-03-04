@@ -12,7 +12,7 @@ from rest_framework import serializers
 
 from django.db import transaction
 from django.db.models import Sum
-from .emails import send_activation_email, send_welcome_email
+from .emails import send_activation_email, send_admin_account_setup_email
 from .models import AuditLog
 from .tokens import account_activation_token
 from groups.models import Group, Membership
@@ -112,8 +112,9 @@ class RegisterSerializer(serializers.ModelSerializer):
 # ====================================================
 class AdminUserRegistrationSerializer(serializers.ModelSerializer):
     """
-    Serializer for admins to create new users directly.
-    Bypasses standard activation flow and auto-approves.
+    Serializer for admins to invite users directly.
+    Users are pre-approved but remain inactive until they set a password
+    through the emailed setup link.
     """
     role = serializers.ChoiceField(choices=User.ROLE_CHOICES, default='MEMBER')
     group_ids = serializers.ListField(
@@ -147,27 +148,36 @@ class AdminUserRegistrationSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         group_ids = validated_data.pop("group_ids", [])
-        # Generate a random temporary password or handle password differently?
-        # For now, let's create without password and user will need to reset it,
-        # or we set a default one. Usually, for admin-added users, we might want
-        # to send a reset link immediately or set a temp one.
-        
+
         user = User.objects.create_user(
             email=validated_data["email"],
             first_name=validated_data["first_name"],
             last_name=validated_data["last_name"],
             phone_number=validated_data.get("phone_number", ""),
-            password=User.objects.make_random_password() if hasattr(User.objects, 'make_random_password') else "TempPass123!", 
+            password=None,
             role=validated_data.get("role", "MEMBER"),
             is_approved=True,
-            is_active=True,
+            is_active=False,
             application_status="APPROVED",
         )
-        
-        # We should ideally trigger a password reset/setup email here
-        # For now, let's just create the user. Standard approval logic
-        # (generating membership number) should also be applied if needed.
-        user.approve_member(actor=self.context['request'].user)
+
+        if not user.membership_number:
+            user.membership_number = user.generate_membership_number()
+            user.save(update_fields=["membership_number"])
+
+        uid = urlsafe_base64_encode(force_bytes(user.pk))
+        token = PasswordResetTokenGenerator().make_token(user)
+        reset_path = reverse(
+            "password_reset_page",
+            kwargs={"uid": uid, "token": token},
+        )
+        request = self.context.get("request")
+        setup_link = (
+            request.build_absolute_uri(reset_path)
+            if request is not None
+            else f"http://localhost:8000{reset_path}"
+        )
+        send_admin_account_setup_email(user, setup_link)
 
         if group_ids:
             membership_role = "TREASURER" if user.role == "TREASURER" else "MEMBER"

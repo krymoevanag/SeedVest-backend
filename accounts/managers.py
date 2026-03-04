@@ -18,10 +18,18 @@ class UserManager(BaseUserManager):
         extra_fields.setdefault("is_active", True)
         extra_fields.setdefault("is_approved", True)
         extra_fields.setdefault("role", "ADMIN")
+        extra_fields.setdefault("application_status", "APPROVED")
 
         if extra_fields.get("is_staff") is not True:
             raise ValueError("Superuser must have is_staff=True")
         if extra_fields.get("is_superuser") is not True:
             raise ValueError("Superuser must have is_superuser=True")
 
-        return self.create_user(email, password, **extra_fields)
+        user = self.create_user(email, password, **extra_fields)
+
+        # Ensure superusers created from terminal also get membership numbers.
+        if not user.membership_number:
+            user.membership_number = user.generate_membership_number()
+            user.save(update_fields=["membership_number"])
+
+        return user
