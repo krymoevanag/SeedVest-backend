@@ -1410,8 +1410,8 @@ class AutoSavingGenerationHistoryView(ListAPIView):
     def get_queryset(self):
         user = self.request.user
         if user.role in ("ADMIN", "TREASURER") or user.is_superuser:
-            return MonthlySavingGeneration.objects.all().order_by("-created_at")
-        return MonthlySavingGeneration.objects.filter(config__user=user).order_by("-created_at")
+            return MonthlySavingGeneration.objects.all().order_by("-generated_at")
+        return MonthlySavingGeneration.objects.filter(config__user=user).order_by("-generated_at")
 
 class MemberAnalyticsView(APIView):
     permission_classes = [IsAuthenticated, IsApprovedUser]

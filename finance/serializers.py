@@ -261,6 +261,7 @@ class MonthlySavingGenerationSerializer(serializers.ModelSerializer):
     amount = serializers.DecimalField(source="config.amount", max_digits=10, decimal_places=2, read_only=True)
     due_date = serializers.DateField(source="contribution.due_date", read_only=True)
     status = serializers.CharField(source="contribution.status", read_only=True)
+    created_at = serializers.DateTimeField(source="generated_at", read_only=True)
 
     class Meta:
         model = MonthlySavingGeneration
