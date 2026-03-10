@@ -17,6 +17,7 @@ class User(AbstractUser):
     ROLE_CHOICES = (
         ("ADMIN", "Admin"),
         ("TREASURER", "Treasurer"),
+        ("FINANCIAL_SECRETARY", "Financial Secretary"),
         ("MEMBER", "Member"),
     )
 

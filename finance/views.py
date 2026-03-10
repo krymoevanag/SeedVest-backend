@@ -90,8 +90,10 @@ class ContributionViewSet(viewsets.ModelViewSet):
         if user.is_superuser or user.role == "ADMIN":
             return Contribution.objects.filter(is_archived=False)
 
-        if user.role == "TREASURER":
-            return Contribution.objects.filter(group__treasurer=user, is_archived=False)
+        if user.role in ["TREASURER", "FINANCIAL_SECRETARY"]:
+            if user.role == "TREASURER":
+                return Contribution.objects.filter(group__treasurer=user, is_archived=False)
+            return Contribution.objects.filter(group__memberships__user=user, is_archived=False).distinct()
 
         if user.role == "MEMBER":
             return Contribution.objects.filter(user=user, is_archived=False)
@@ -237,6 +239,7 @@ class ContributionViewSet(viewsets.ModelViewSet):
 
 class PenaltyViewSet(viewsets.ModelViewSet):
     serializer_class = PenaltySerializer
+    permission_classes = [IsAuthenticated, PenaltyPermission]
 
     def get_queryset(self):
         user = self.request.user
@@ -251,12 +254,17 @@ class PenaltyViewSet(viewsets.ModelViewSet):
         if user.is_superuser or user.role == "ADMIN":
             return base_queryset
 
-        if user.role == "TREASURER":
-            # Penalties in groups where the user is treasurer
+        if user.role in ["TREASURER", "FINANCIAL_SECRETARY"]:
+            # Penalties in groups where the user is treasurer or secretary
             from django.db import models
+            if user.role == "TREASURER":
+                return base_queryset.filter(
+                    models.Q(contribution__group__treasurer=user) |
+                    models.Q(user__membership__group__treasurer=user)
+                ).distinct()
             return base_queryset.filter(
-                models.Q(contribution__group__treasurer=user) |
-                models.Q(user__membership__group__treasurer=user)
+                models.Q(contribution__group__memberships__user=user) |
+                models.Q(user__membership__group__memberships__user=user)
             ).distinct()
 
         if user.role == "MEMBER":
@@ -280,14 +288,11 @@ class PenaltyViewSet(viewsets.ModelViewSet):
         if actor.role == "TREASURER":
             if contribution and contribution.group.treasurer != actor:
                 raise PermissionDenied("Not your group's contribution.")
-                from groups.models import Membership
-                if not Membership.objects.filter(user=target_user, group__treasurer=actor).exists():
-                    raise PermissionDenied("User is not in your group.")
-            elif target_user:
-                # General role check for treasurer targeting users
-                from groups.models import Membership
-                if not Membership.objects.filter(user=target_user, group__treasurer=actor).exists():
-                    raise PermissionDenied("You can only penalize users within your own group.")
+            
+            # General role check for treasurer targeting users
+            from groups.models import Membership
+            if target_user and not Membership.objects.filter(user=target_user, group__treasurer=actor).exists():
+                raise PermissionDenied("You can only penalize users within your own group.")
 
         if actor.role not in ["ADMIN", "TREASURER"]:
             raise PermissionDenied("Only Admins and Treasurers can create penalties.")
@@ -404,8 +409,11 @@ class InvestmentViewSet(viewsets.ModelViewSet):
 
         if user.is_superuser or user.role == "ADMIN":
             scoped = queryset
-        elif user.role == "TREASURER":
-            scoped = queryset.filter(group__treasurer=user)
+        elif user.role in ["TREASURER", "FINANCIAL_SECRETARY"]:
+            if user.role == "TREASURER":
+                scoped = queryset.filter(group__treasurer=user)
+            else:
+                scoped = queryset.filter(group__memberships__user=user).distinct()
         elif user.role == "MEMBER":
             scoped = queryset.filter(created_by=user)
         else:
@@ -462,6 +470,10 @@ class InvestmentViewSet(viewsets.ModelViewSet):
         return scoped
 
     def perform_create(self, serializer):
+        user = self.request.user
+        if user.role not in ("ADMIN", "TREASURER", "MEMBER") and not user.is_superuser:
+            raise PermissionDenied("Only admins, treasurers, and members can propose investments.")
+            
         investment = serializer.save(created_by=self.request.user)
         FinancialCycleService.ensure_cycle_for_group(
             group=investment.group,
@@ -520,7 +532,7 @@ class InvestmentViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["get"])
     def inbox(self, request):
         user = request.user
-        if user.role not in ("ADMIN", "TREASURER") and not user.is_superuser:
+        if user.role not in ("ADMIN", "TREASURER", "FINANCIAL_SECRETARY") and not user.is_superuser:
             return Response({"detail": "Not authorized."}, status=status.HTTP_403_FORBIDDEN)
 
         queryset = self.filter_queryset(self.get_queryset())
@@ -738,7 +750,7 @@ class InvestmentViewSet(viewsets.ModelViewSet):
 
 class FinancialCycleViewSet(viewsets.ModelViewSet):
     serializer_class = FinancialCycleSerializer
-    permission_classes = [IsAuthenticated, IsTreasurerOrAdmin]
+    permission_classes = [IsAuthenticated, IsTreasurerOrAdminOrFinancialSecretaryReadOnly]
     http_method_names = ["get", "post", "patch", "head", "options"]
 
     def get_queryset(self):
@@ -747,8 +759,11 @@ class FinancialCycleViewSet(viewsets.ModelViewSet):
 
         if user.is_superuser or user.role == "ADMIN":
             scoped = queryset
-        elif user.role == "TREASURER":
-            scoped = queryset.filter(group__treasurer=user)
+        elif user.role in ["TREASURER", "FINANCIAL_SECRETARY"]:
+            if user.role == "TREASURER":
+                scoped = queryset.filter(group__treasurer=user)
+            else:
+                scoped = queryset.filter(group__memberships__user=user).distinct()
         else:
             scoped = queryset.none()
 
@@ -770,9 +785,16 @@ class FinancialCycleViewSet(viewsets.ModelViewSet):
         cycle = self.get_object()
         user = request.user
 
-        if user.role == "TREASURER" and cycle.group.treasurer_id != user.id and not user.is_superuser:
-            return Response(
-                {"detail": "Treasurers can only close cycles for their own group."},
+        if user.role in ["TREASURER"] and not user.is_superuser:
+            is_treasurer_of_group = user.role == "TREASURER" and cycle.group.treasurer_id == user.id
+            if not is_treasurer_of_group:
+                return Response(
+                    {"detail": "Access denied. Only the Treasurer of this group can close cycles."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+        elif user.role == "FINANCIAL_SECRETARY":
+             return Response(
+                {"detail": "Access denied. Financial Secretaries have read-only access."},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -834,8 +856,11 @@ class MonthlyContributionReportViewSet(viewsets.ReadOnlyModelViewSet):
 
         if user.is_superuser or user.role == "ADMIN":
             scoped = queryset
-        elif user.role == "TREASURER":
-            scoped = queryset.filter(group__treasurer=user)
+        elif user.role in ["TREASURER", "FINANCIAL_SECRETARY"]:
+            if user.role == "TREASURER":
+                scoped = queryset.filter(group__treasurer=user)
+            else:
+                scoped = queryset.filter(group__memberships__user=user).distinct()
         else:
             scoped = queryset.filter(user=user)
 
@@ -896,7 +921,7 @@ class MonthlyContributionReportViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class CycleAnnualSummaryView(APIView):
-    permission_classes = [IsAuthenticated, IsTreasurerOrAdmin]
+    permission_classes = [IsAuthenticated, IsTreasurerOrAdminOrFinancialSecretaryReadOnly]
 
     def get(self, request):
         cycle_id = request.query_params.get("cycle_id")
@@ -909,8 +934,11 @@ class CycleAnnualSummaryView(APIView):
             return Response({"detail": "Cycle not found."}, status=status.HTTP_404_NOT_FOUND)
 
         user = request.user
-        if user.role == "TREASURER" and cycle.group.treasurer_id != user.id and not user.is_superuser:
-            return Response({"detail": "Access denied."}, status=status.HTTP_403_FORBIDDEN)
+        if user.role in ["TREASURER", "FINANCIAL_SECRETARY"] and not user.is_superuser:
+            is_treasurer_of_group = user.role == "TREASURER" and cycle.group.treasurer_id == user.id
+            is_secretary_of_group = user.role == "FINANCIAL_SECRETARY" and cycle.group.memberships.filter(user=user).exists()
+            if not (is_treasurer_of_group or is_secretary_of_group):
+                return Response({"detail": "Access denied."}, status=status.HTTP_403_FORBIDDEN)
 
         summary = ReportService.get_cycle_annual_summary(cycle_id=cycle.id)
         return Response(summary)
@@ -1081,7 +1109,7 @@ class AdminMemberListView(ListAPIView):
     Correctly scopes finances per membership.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsTreasurerOrAdminOrFinancialSecretaryReadOnly]
     serializer_class = AdminMembershipSerializer
     filter_backends = [filters.SearchFilter]
     search_fields = [
@@ -1094,8 +1122,8 @@ class AdminMemberListView(ListAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        if user.role not in ("ADMIN", "TREASURER") and not user.is_superuser:
-            raise PermissionDenied("Only admins and treasurers can view this list.")
+        if user.role not in ("ADMIN", "TREASURER", "FINANCIAL_SECRETARY") and not user.is_superuser:
+            raise PermissionDenied("Only admins, treasurers, and financial secretaries can view this list.")
 
         queryset = Membership.objects.select_related("user", "group")
 
@@ -1103,6 +1131,8 @@ class AdminMemberListView(ListAPIView):
         if not user.is_superuser and user.role != "ADMIN":
             if user.role == "TREASURER":
                 queryset = queryset.filter(group__treasurer=user)
+            elif user.role == "FINANCIAL_SECRETARY":
+                queryset = queryset.filter(group__memberships__user=user).distinct()
             else:
                 queryset = Membership.objects.none()
 
@@ -1273,7 +1303,7 @@ class AdminGroupSummaryView(APIView):
     """
     Returns summary statistics for a specific group.
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsTreasurerOrAdminOrFinancialSecretaryReadOnly]
 
     def get(self, request):
         user = request.user
@@ -1291,6 +1321,8 @@ class AdminGroupSummaryView(APIView):
         # Permission check
         if not user.is_superuser and user.role != "ADMIN":
             if user.role == "TREASURER" and group.treasurer_id != user.id:
+                return Response({"detail": "Access denied."}, status=status.HTTP_403_FORBIDDEN)
+            if user.role == "FINANCIAL_SECRETARY" and not group.memberships.filter(user=user).exists():
                 return Response({"detail": "Access denied."}, status=status.HTTP_403_FORBIDDEN)
             if user.role == "MEMBER":
                  return Response({"detail": "Access denied."}, status=status.HTTP_403_FORBIDDEN)
@@ -1329,13 +1361,13 @@ class FinancialReportView(APIView):
     """
     Provides monthly financial summary reports for admins and treasurers.
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsTreasurerOrAdminOrFinancialSecretaryReadOnly]
 
     def get(self, request):
         user = request.user
-        if user.role not in ("ADMIN", "TREASURER") and not user.is_superuser:
+        if user.role not in ("ADMIN", "TREASURER", "FINANCIAL_SECRETARY") and not user.is_superuser:
             return Response(
-                {"detail": "Only admins and treasurers can access reports."},
+                {"detail": "Only admins, treasurers, and financial secretaries can access reports."},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -1354,11 +1386,13 @@ class FinancialReportView(APIView):
             return Response({"detail": "group_id is required."}, status=status.HTTP_400_BAD_REQUEST)
 
         # Treasurer check
-        if user.role == "TREASURER" and not user.is_superuser:
+        if user.role in ["TREASURER", "FINANCIAL_SECRETARY"] and not user.is_superuser:
             try:
                 group = Group.objects.get(pk=group_id)
-                if group.treasurer_id != user.id:
+                if user.role == "TREASURER" and group.treasurer_id != user.id:
                     return Response({"detail": "You can only view reports for your own group."}, status=status.HTTP_403_FORBIDDEN)
+                if user.role == "FINANCIAL_SECRETARY" and not group.memberships.filter(user=user).exists():
+                    return Response({"detail": "You can only view reports for groups you are a member of."}, status=status.HTTP_403_FORBIDDEN)
             except Group.DoesNotExist:
                 return Response({"detail": "Group not found."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -1426,7 +1460,7 @@ class MemberAnalyticsView(APIView):
         return Response(serializer.data)
 
 class GroupAnalyticsView(APIView):
-    permission_classes = [IsAuthenticated, IsTreasurerOrAdmin]
+    permission_classes = [IsAuthenticated, IsTreasurerOrAdminOrFinancialSecretaryReadOnly]
 
     def get(self, request):
         group_id = request.query_params.get("group_id")
@@ -1441,3 +1475,70 @@ class GroupAnalyticsView(APIView):
             return Response(serializer.data)
         except Exception as e:
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class FinancialSecretaryReportView(APIView):
+    """
+    Consolidated financial oversight report for Financial Secretaries.
+    Returns aggregated data for the entire group.
+    """
+    permission_classes = [IsAuthenticated, IsFinancialSecretary]
+
+    def get(self, request):
+        group_id = request.query_params.get("group_id")
+        if not group_id:
+            return Response({"detail": "group_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            group = Group.objects.get(pk=group_id)
+        except Group.DoesNotExist:
+            return Response({"detail": "Group not found."}, status=status.HTTP_404_NOT_FOUND)
+        
+        # Ensure user is secretary of THIS group
+        if not group.memberships.filter(user=request.user, role="FINANCIAL_SECRETARY").exists():
+            return Response({"detail": "Access denied. You are not the Financial Secretary for this group."}, status=status.HTTP_403_FORBIDDEN)
+            
+        service = AnalyticsService(request.user)
+        cycle_id = request.query_params.get("cycle_id")
+        
+        # Here we combine multiple analytics into a single "oversight" report
+        group_stats = service.get_group_analytics(group_id=group_id, cycle_id=cycle_id)
+        
+        # We also want member-level summaries for the secretary
+        from .models import Contribution, Penalty, Investment
+        from django.db.models import Sum, Count
+        
+        members = group.memberships.select_related("user").all()
+        member_summaries = []
+        for membership in members:
+            user = membership.user
+            qs = Contribution.objects.filter(user=user, group=group, is_archived=False)
+            if cycle_id:
+                qs = qs.filter(financial_cycle_id=cycle_id)
+            
+            p_qs = Penalty.objects.filter(user=user, is_archived=False, contribution__group=group)
+            if cycle_id:
+                p_qs = p_qs.filter(contribution__financial_cycle_id=cycle_id)
+                
+            member_summaries.append({
+                "id": user.id,
+                "name": f"{user.first_name} {user.last_name}".strip() or user.email,
+                "total_contributed": qs.filter(status__in=["PAID", "LATE"]).aggregate(total=Sum("amount"))["total"] or 0,
+                "outstanding": qs.exclude(status__in=["PAID", "LATE"]).aggregate(total=Sum("expected_amount"))["total"] or 0,
+                "penalties_total": p_qs.aggregate(total=Sum("amount"))["total"] or 0,
+            })
+            
+        data = {
+            "period": "Current Cycle" if not cycle_id else f"Cycle {cycle_id}",
+            "group_name": group.name,
+            "total_contributions": group_stats["total_savings"],
+            "total_penalties": group_stats["total_penalties"],
+            "total_investments": group_stats.get("investment_summary", {}).get("total_active", 0),
+            "total_investment_returns": group_stats.get("investment_summary", {}).get("total_returns", 0),
+            "net_savings": group_stats["total_savings"] - group_stats["total_penalties"],
+            "member_summaries": member_summaries,
+            "monthly_trends": group_stats.get("monthly_contributions", []),
+        }
+        
+        serializer = FinancialSecretaryReportSerializer(data)
+        return Response(serializer.data)

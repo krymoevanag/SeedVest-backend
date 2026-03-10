@@ -853,3 +853,18 @@ class AdminMembershipSerializer(serializers.ModelSerializer):
 
     def get_full_name(self, obj):
         return f"{obj.user.first_name} {obj.user.last_name}".strip()
+
+
+class FinancialSecretaryReportSerializer(serializers.Serializer):
+    """
+    Serializer for the aggregated financial report for Financial Secretaries.
+    """
+    period = serializers.CharField()
+    group_name = serializers.CharField()
+    total_contributions = serializers.DecimalField(max_digits=15, decimal_places=2)
+    total_penalties = serializers.DecimalField(max_digits=15, decimal_places=2)
+    total_investments = serializers.DecimalField(max_digits=15, decimal_places=2)
+    total_investment_returns = serializers.DecimalField(max_digits=15, decimal_places=2)
+    net_savings = serializers.DecimalField(max_digits=15, decimal_places=2)
+    member_summaries = serializers.ListField(child=serializers.DictField())
+    monthly_trends = serializers.ListField(child=serializers.DictField())

@@ -55,6 +55,7 @@ class PenaltyPermission(permissions.BasePermission):
     Custom permission:
     - ADMIN: full access
     - TREASURER: penalties for groups they manage
+    - FINANCIAL_SECRETARY: read-only access for groups they oversee
     - MEMBER: penalties for their own contributions only
     """
 
@@ -71,8 +72,11 @@ class PenaltyPermission(permissions.BasePermission):
         if role == "ADMIN":
             return True
 
-        if role == "TREASURER":
-            return obj.contribution.group.treasurer_id == user.id
+        if role == "TREASURER" or (role == "FINANCIAL_SECRETARY" and request.method in permissions.SAFE_METHODS):
+            return obj.contribution.group.memberships.filter(user=user).exists() and (
+                role == "TREASURER" and obj.contribution.group.treasurer_id == user.id or
+                role == "FINANCIAL_SECRETARY"
+            )
 
         if role == "MEMBER":
             return obj.contribution.user_id == user.id
@@ -83,6 +87,20 @@ class PenaltyPermission(permissions.BasePermission):
 class IsTreasurerOrAdmin(BasePermission):
     def has_permission(self, request, view):
         return request.user.role in ["ADMIN", "TREASURER"]
+
+
+class IsFinancialSecretary(BasePermission):
+    def has_permission(self, request, view):
+        return request.user.role == "FINANCIAL_SECRETARY"
+
+
+class IsTreasurerOrAdminOrFinancialSecretaryReadOnly(BasePermission):
+    def has_permission(self, request, view):
+        if request.user.role in ["ADMIN", "TREASURER"]:
+            return True
+        if request.user.role == "FINANCIAL_SECRETARY" and request.method in permissions.SAFE_METHODS:
+            return True
+        return False
 
 
 class IsGroupMember(BasePermission):

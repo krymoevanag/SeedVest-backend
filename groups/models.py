@@ -43,6 +43,7 @@ class Group(models.Model):
 class Membership(models.Model):
     ROLE_CHOICES = (
         ('TREASURER', 'Treasurer'),
+        ('FINANCIAL_SECRETARY', 'Financial Secretary'),
         ('MEMBER', 'Member'),
     )
 

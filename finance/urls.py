@@ -20,6 +20,7 @@ from .views import (
     AutoSavingGenerationHistoryView,
     MemberAnalyticsView,
     GroupAnalyticsView,
+    FinancialSecretaryReportView,
 )
 
 # Create a DRF router and register the ViewSets
@@ -57,6 +58,7 @@ urlpatterns = [
         name="admin-group-summary",
     ),
     path("reports/summary/", FinancialReportView.as_view(), name="financial-report-summary"),
+    path("reports/financial/", FinancialSecretaryReportView.as_view(), name="financial-report-secretary"),
     path("reports/annual/", CycleAnnualSummaryView.as_view(), name="financial-report-annual"),
     path("trigger-auto-save/", TriggerAutoSaveView.as_view(), name="trigger-auto-save"),
     path("auto-save-history/", AutoSavingGenerationHistoryView.as_view(), name="auto-save-history"),
