@@ -48,7 +48,12 @@ class Membership(models.Model):
     )
 
     user = models.ForeignKey(User, on_delete=models.CASCADE)
-    group = models.ForeignKey(Group, on_delete=models.CASCADE)
+    group = models.ForeignKey(
+        Group,
+        on_delete=models.CASCADE,
+        related_name="memberships",
+        related_query_name="memberships",
+    )
     role = models.CharField(max_length=20, choices=ROLE_CHOICES)
     is_auto_penalty_enabled = models.BooleanField(default=True)
     joined_at = models.DateTimeField(auto_now_add=True)

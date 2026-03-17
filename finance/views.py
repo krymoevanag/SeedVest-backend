@@ -31,7 +31,14 @@ from django.utils import timezone
 from django.http import HttpResponse
 
 from accounts.permissions import IsApprovedUser
-from finance.permissions import HasFinanceAccess, PenaltyPermission, IsTreasurerOrAdmin
+from finance.permissions import (
+    HasFinanceAccess,
+    PenaltyPermission,
+    IsTreasurerOrAdmin,
+    IsTreasurerOrAdminOrFinancialSecretaryReadOnly,
+    IsFinancialSecretary,
+    IsGroupMember,
+)
 from groups.models import Group, Membership
 from .models import (
     Contribution,
@@ -91,9 +98,8 @@ class ContributionViewSet(viewsets.ModelViewSet):
             return Contribution.objects.filter(is_archived=False)
 
         if user.role in ["TREASURER", "FINANCIAL_SECRETARY"]:
-            if user.role == "TREASURER":
-                return Contribution.objects.filter(group__treasurer=user, is_archived=False)
-            return Contribution.objects.filter(group__memberships__user=user, is_archived=False).distinct()
+            user_groups = user.membership_set.values_list('group_id', flat=True)
+            return Contribution.objects.filter(group_id__in=user_groups, is_archived=False)
 
         if user.role == "MEMBER":
             return Contribution.objects.filter(user=user, is_archived=False)
@@ -256,15 +262,10 @@ class PenaltyViewSet(viewsets.ModelViewSet):
 
         if user.role in ["TREASURER", "FINANCIAL_SECRETARY"]:
             # Penalties in groups where the user is treasurer or secretary
-            from django.db import models
-            if user.role == "TREASURER":
-                return base_queryset.filter(
-                    models.Q(contribution__group__treasurer=user) |
-                    models.Q(user__membership__group__treasurer=user)
-                ).distinct()
+            user_groups = user.membership_set.values_list('group_id', flat=True)
             return base_queryset.filter(
-                models.Q(contribution__group__memberships__user=user) |
-                models.Q(user__membership__group__memberships__user=user)
+                models.Q(contribution__group_id__in=user_groups) |
+                models.Q(user__membership_set__group_id__in=user_groups)
             ).distinct()
 
         if user.role == "MEMBER":
@@ -410,10 +411,8 @@ class InvestmentViewSet(viewsets.ModelViewSet):
         if user.is_superuser or user.role == "ADMIN":
             scoped = queryset
         elif user.role in ["TREASURER", "FINANCIAL_SECRETARY"]:
-            if user.role == "TREASURER":
-                scoped = queryset.filter(group__treasurer=user)
-            else:
-                scoped = queryset.filter(group__memberships__user=user).distinct()
+            user_groups = user.membership_set.values_list('group_id', flat=True)
+            scoped = queryset.filter(group_id__in=user_groups)
         elif user.role == "MEMBER":
             scoped = queryset.filter(created_by=user)
         else:

@@ -30,6 +30,8 @@ from rest_framework.views import APIView
 # ====================================================
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.views import TokenRefreshView as BaseTokenRefreshView
+from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
 
 # ====================================================
 # LOCAL IMPORTS
@@ -244,7 +246,7 @@ class UserViewSet(viewsets.ModelViewSet):
         
         # Filtering for non-superusers/non-admins
         if not user.is_superuser and user.role != "ADMIN":
-            if user.role == "TREASURER":
+            if user.role in ["TREASURER", "FINANCIAL_SECRETARY"]:
                 pass
             else:
                 queryset = User.objects.filter(id=user.id)
@@ -530,11 +532,11 @@ class PendingUsersView(ListAPIView):
     def get_queryset(self):
         user = self.request.user
         if user.is_superuser or user.role == "ADMIN":
-            return User.objects.filter(is_approved=False, is_active=True)
+            return User.objects.filter(is_approved=False)
         
         # Treasurers see pending users in their scope
-        if user.role == "TREASURER":
-            return User.objects.filter(is_approved=False, is_active=True)
+        if user.role in ["TREASURER", "FINANCIAL_SECRETARY"]:
+            return User.objects.filter(is_approved=False)
             
         return User.objects.none()
 
@@ -647,6 +649,30 @@ class PasswordResetConfirmView(APIView):
             {"detail": "Password reset successful."},
             status=status.HTTP_200_OK,
         )
+
+
+# ====================================================
+# SAFE TOKEN REFRESH
+# ====================================================
+class SafeTokenRefreshView(BaseTokenRefreshView):
+    """
+    Overrides the default TokenRefreshView to handle the case where the user
+    associated with the refresh token has been deleted. Instead of a 500, we
+    return a clean 401 so the client can redirect to the login screen.
+    """
+    def post(self, request, *args, **kwargs):
+        try:
+            return super().post(request, *args, **kwargs)
+        except User.DoesNotExist:
+            return Response(
+                {"detail": "User not found. Please log in again."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+        except (TokenError, InvalidToken) as e:
+            return Response(
+                {"detail": str(e)},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
 
 
 # ====================================================

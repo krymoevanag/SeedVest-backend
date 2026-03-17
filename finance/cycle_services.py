@@ -254,7 +254,7 @@ class FinancialDataAuditService:
             ]
         )
         investments_without_member = Investment.objects.filter(created_by__isnull=False).exclude(
-            group__membership__user_id=F("created_by_id")
+            group__memberships__user_id=F("created_by_id")
         )
 
         return {

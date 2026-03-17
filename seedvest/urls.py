@@ -3,11 +3,8 @@ from django.urls import path, include
 from django.http import JsonResponse
 from django.conf import settings
 from django.conf.urls.static import static
-from rest_framework_simplejwt.views import (
-    TokenObtainPairView,
-    TokenRefreshView,
-)
-from accounts.views import password_reset_page
+from rest_framework_simplejwt.views import TokenObtainPairView
+from accounts.views import password_reset_page, SafeTokenRefreshView
 
 def health_check(request):
     """Simple health check endpoint for connectivity testing"""
@@ -20,7 +17,7 @@ urlpatterns = [
     path("api/health/", health_check, name="health_check"),
     # JWT AUTH
     path("api/token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
-    path("api/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
+    path("api/token/refresh/", SafeTokenRefreshView.as_view(), name="token_refresh"),
     # APPS
     path("api/accounts/", include("accounts.urls")),
     path("api/groups/", include("groups.urls")),

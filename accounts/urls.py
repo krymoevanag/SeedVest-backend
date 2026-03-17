@@ -12,6 +12,7 @@ from .views import (
     PasswordResetConfirmView,
     LogoutView,
     AdminStatsView,
+    SafeTokenRefreshView,
 )
 
 # DRF router
@@ -25,7 +26,7 @@ urlpatterns = [
     path("register/", RegisterView.as_view(), name="register"),
     path("login/", LoginView.as_view(), name="login"),
     path("logout/", LogoutView.as_view(), name="logout"),
-    path("token/refresh/", TokenRefreshView.as_view(), name="token-refresh"),
+    path("token/refresh/", SafeTokenRefreshView.as_view(), name="token-refresh"),
     # Account activation
     path(
         "activate/<uidb64>/<token>/",

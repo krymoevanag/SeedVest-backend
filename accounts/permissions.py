@@ -36,7 +36,7 @@ class IsTreasurerOnly(RolePermission):
     allowed_roles = {"TREASURER"}
 
 class IsAdminOrTreasurer(RolePermission):
-    allowed_roles = {"ADMIN", "TREASURER"}
+    allowed_roles = {"ADMIN", "TREASURER", "FINANCIAL_SECRETARY"}
 
 # Aliases for convenience/user preference
 AdminOnly = IsAdminOnly

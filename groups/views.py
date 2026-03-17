@@ -25,10 +25,10 @@ class GroupViewSet(viewsets.ModelViewSet):
         if user.role == "TREASURER":
             # Treasurers manage their own groups and see groups they are members of
             return Group.objects.filter(
-                Q(treasurer=user) | Q(membership__user=user)
+                Q(treasurer=user) | Q(memberships__user=user)
             ).distinct()
 
-        return Group.objects.filter(membership__user=user).distinct()
+        return Group.objects.filter(memberships__user=user).distinct()
 
     def perform_create(self, serializer):
         user = self.request.user

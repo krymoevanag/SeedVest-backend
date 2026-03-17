@@ -86,7 +86,7 @@ class PenaltyPermission(permissions.BasePermission):
 
 class IsTreasurerOrAdmin(BasePermission):
     def has_permission(self, request, view):
-        return request.user.role in ["ADMIN", "TREASURER"]
+        return request.user.role in ["ADMIN", "TREASURER", "FINANCIAL_SECRETARY"]
 
 
 class IsFinancialSecretary(BasePermission):
