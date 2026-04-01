@@ -74,6 +74,39 @@ class MpesaCallbackTests(TestCase):
             ).exists()
         )
 
+    @patch("payments.views.stk_push")
+    def test_initiate_payment_accepts_01_prefix_and_country_code(self, mock_stk_push):
+        payloads = [
+            ("0112345678", "254112345678"),
+            ("+254112345678", "254112345678"),
+            ("2540112345678", "254112345678"),
+        ]
+
+        for index, (input_phone, expected_phone) in enumerate(payloads, start=1):
+            mock_stk_push.reset_mock()
+            mock_stk_push.return_value = {
+                "MerchantRequestID": f"test-merchant-id-01-{index}",
+                "CheckoutRequestID": f"test-checkout-id-01-{index}",
+                "ResponseCode": "0",
+                "ResponseDescription": "Success",
+                "CustomerMessage": "Success"
+            }
+
+            payload = {
+                "phone": input_phone,
+                "amount": 10
+            }
+
+            response = self.client.post(self.payment_url, payload)
+
+            self.assertEqual(response.status_code, 200)
+            mock_stk_push.assert_called_once_with(expected_phone, 10)
+            self.assertTrue(
+                MpesaTransaction.objects.filter(
+                    checkout_request_id=f"test-checkout-id-01-{index}"
+                ).exists()
+            )
+
     def test_initiate_payment_rejects_invalid_phone(self):
         payload = {
             "phone_number": "12345",

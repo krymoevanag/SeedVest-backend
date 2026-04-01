@@ -109,6 +109,9 @@ class AuditLog(models.Model):
         ("ROLE_CHANGE", "Role Change"),
         ("CONTRIBUTION_ADD", "Contribution Add"),
         ("PENALTY_ISSUE", "Penalty Issue"),
+        ("MEMBERSHIP_CHANGE", "Membership Change"),
+        ("FINANCE_CHANGE", "Finance Change"),
+        ("FINANCE_ARCHIVE", "Finance Archive"),
     )
 
     actor = models.ForeignKey(

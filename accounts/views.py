@@ -48,10 +48,12 @@ from .serializers import (
     PendingUserSerializer,
     PasswordResetRequestSerializer,
     PasswordResetConfirmSerializer,
+    AuditLogSerializer,
     UserProfileSerializer,
     AdminUserRegistrationSerializer,
     ChangePasswordSerializer,
 )
+from .models import User, AuditLog
 from .tokens import account_activation_token
 
 
@@ -779,3 +781,16 @@ class AdminStatsView(APIView):
                 "total_contributions": total_savings,
             }
         )
+
+
+class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    ViewSet for viewing system audit logs. Only accessible by admins and treasurers.
+    """
+    queryset = AuditLog.objects.all().select_related("actor", "target_user")
+    serializer_class = AuditLogSerializer
+    permission_classes = [IsAuthenticated, IsAdminOrTreasurer]
+
+    def get_queryset(self):
+        # Additional filtering can be added here if needed
+        return super().get_queryset()

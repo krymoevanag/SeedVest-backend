@@ -1,4 +1,4 @@
-﻿from django.contrib.auth import get_user_model, authenticate
+from django.contrib.auth import get_user_model, authenticate
 from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.urls import reverse
@@ -217,7 +217,6 @@ class ApproveMemberSerializer(serializers.ModelSerializer):
         model = User
         fields = (
             "id",
-            "username",
             "email",
             "is_approved",
             "membership_number",
@@ -239,7 +238,6 @@ class UserProfileSerializer(serializers.ModelSerializer):
         model = User
         fields = (
             "id",
-            "username",
             "email",
             "full_name",
             "first_name",
@@ -256,7 +254,6 @@ class UserProfileSerializer(serializers.ModelSerializer):
         )
         read_only_fields = (
             "id",
-            "username",
             "email",
             "full_name",
             "role",
@@ -417,21 +414,17 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
 # AUDIT LOGS
 # ====================================================
 class AuditLogSerializer(serializers.ModelSerializer):
-    actor_username = serializers.CharField(
-        source="actor.username",
-        read_only=True,
-    )
-    target_username = serializers.CharField(
-        source="target_user.username",
-        read_only=True,
-    )
+    actor_email = serializers.EmailField(source="actor.email", read_only=True)
+    target_email = serializers.EmailField(source="target_user.email", read_only=True)
 
     class Meta:
         model = AuditLog
         fields = (
             "id",
-            "actor_username",
-            "target_username",
+            "actor",
+            "actor_email",
+            "target_user",
+            "target_email",
             "action",
             "timestamp",
             "notes",

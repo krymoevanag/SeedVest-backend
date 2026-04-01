@@ -29,6 +29,8 @@ from rest_framework.views import APIView
 from rest_framework.generics import ListAPIView
 from django.utils import timezone
 from django.http import HttpResponse
+from accounts.models import AuditLog, User
+from notifications.models import Notification
 
 from accounts.permissions import IsApprovedUser
 from finance.permissions import (
@@ -108,6 +110,36 @@ class ContributionViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
+
+    def perform_update(self, serializer):
+        instance = self.get_object()
+        old_amount = str(instance.amount)
+        old_status = str(instance.status)
+        old_date = str(instance.due_date)
+        
+        contribution = serializer.save()
+        
+        # Audit Logging
+        changes = []
+        if old_amount != str(contribution.amount):
+            changes.append(f"amount: {old_amount} -> {contribution.amount}")
+        if old_status != str(contribution.status):
+            changes.append(f"status: {old_status} -> {contribution.status}")
+        if old_date != str(contribution.due_date):
+            changes.append(f"due_date: {old_date} -> {contribution.due_date}")
+            
+        if changes:
+            AuditLog.objects.create(
+                actor=self.request.user,
+                target_user=contribution.user,
+                action="FINANCE_CHANGE",
+                notes=f"Updated contribution #{contribution.id}: {', '.join(changes)}"
+            )
+            
+            # Recalculate monthly records and cycle totals
+            FinancialCycleService.sync_monthly_record_from_contribution(contribution)
+            if contribution.financial_cycle:
+                contribution.financial_cycle.refresh_totals()
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -238,8 +270,41 @@ class ContributionViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        contribution.is_archived = True
-        contribution.save(update_fields=["is_archived"])
+        reason = request.data.get("reason", "No reason provided")
+        with transaction.atomic():
+            contribution.is_archived = True
+            contribution.save(update_fields=["is_archived"])
+            
+            # Audit Logging
+            AuditLog.objects.create(
+                actor=user,
+                target_user=contribution.user,
+                action="FINANCE_ARCHIVE",
+                notes=f"Archived contribution #{contribution.id}. Reason: {reason}"
+            )
+            
+            # Recalculate totals
+            if contribution.financial_cycle:
+                contribution.financial_cycle.refresh_totals()
+                
+            # Notify Financial Secretary
+            group = contribution.group
+            secretaries = User.objects.filter(
+                role="FINANCIAL_SECRETARY",
+                membership__group=group
+            ).distinct()
+            for sec in secretaries:
+                Notification.objects.create(
+                    recipient=sec,
+                    title="Financial Record Archived",
+                    message=(
+                        f"Treasurer {user.get_full_name() or user.email} archived a contribution "
+                        f"of {contribution.amount} for {contribution.user.get_full_name() or contribution.user.email}. "
+                        f"Reason: {reason}"
+                    ),
+                    category="SYSTEM",
+                )
+
         return Response({"status": "Contribution archived"}, status=status.HTTP_200_OK)
 
 
@@ -271,7 +336,85 @@ class PenaltyViewSet(viewsets.ModelViewSet):
         if user.role == "MEMBER":
             return base_queryset.filter(user=user, is_archived=False)
 
-        return base_queryset.none()
+        return base_queryset.filter(is_archived=False)
+
+    def destroy(self, request, *args, **kwargs):
+        user = request.user
+        penalty = self.get_object()
+
+        if user.role == "FINANCIAL_SECRETARY" and not user.is_superuser:
+            return Response(
+                {"detail": "Financial secretaries cannot delete penalties."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        
+        # Only admin or treasurer of the group
+        is_admin = user.is_superuser or user.role == "ADMIN"
+        is_treasurer = user.role == "TREASURER"
+        
+        # Scoping treasurer further if possible, but PenaltyPermission already handles some.
+        # Let's be explicit.
+        if is_treasurer and not is_admin:
+            # Check if this penalty belongs to a group where the user is treasurer
+            has_permission = False
+            if penalty.contribution and penalty.contribution.group.treasurer_id == user.id:
+                has_permission = True
+            elif Membership.objects.filter(user=penalty.user, group__treasurer=user).exists():
+                has_permission = True
+                
+            if not has_permission:
+                return Response(
+                    {"detail": "You can only delete penalties in your own group."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        reason = request.data.get("reason", "No reason provided")
+        with transaction.atomic():
+            penalty.is_archived = True
+            penalty.save(update_fields=["is_archived"])
+            
+            # Audit Logging
+            AuditLog.objects.create(
+                actor=user,
+                target_user=penalty.user,
+                action="FINANCE_ARCHIVE",
+                notes=f"Archived penalty #{penalty.id}. Reason: {reason}"
+            )
+            
+            # Recalculate linked contribution penalty if any
+            if penalty.contribution:
+                penalty.contribution.penalty = 0  # Since it's archived
+                penalty.contribution.save(update_fields=["penalty"])
+                if penalty.contribution.financial_cycle:
+                    penalty.contribution.financial_cycle.refresh_totals()
+
+            # Notify Financial Secretary
+            group = None
+            if penalty.contribution:
+                group = penalty.contribution.group
+            else:
+                membership = penalty.user.membership_set.first()
+                if membership:
+                    group = membership.group
+            
+            if group:
+                secretaries = User.objects.filter(
+                    role="FINANCIAL_SECRETARY",
+                    membership__group=group
+                ).distinct()
+                for sec in secretaries:
+                    Notification.objects.create(
+                        recipient=sec,
+                        title="Penalty Record Archived",
+                        message=(
+                            f"Treasurer {user.get_full_name() or user.email} archived a penalty "
+                            f"of {penalty.amount} for {penalty.user.get_full_name() or penalty.user.email}. "
+                            f"Reason: {reason}"
+                        ),
+                        category="SYSTEM",
+                    )
+
+        return Response({"status": "Penalty archived"}, status=status.HTTP_200_OK)
 
     def perform_create(self, serializer):
         actor = self.request.user

@@ -3,6 +3,7 @@ from rest_framework.exceptions import PermissionDenied
 from django.db.models import Q
 from .models import Group, Membership
 from .serializers import GroupSerializer, MembershipSerializer
+from accounts.models import AuditLog
 
 
 class GroupViewSet(viewsets.ModelViewSet):
@@ -73,7 +74,15 @@ class MembershipViewSet(viewsets.ModelViewSet):
         if not (actor.is_superuser or actor.role == "ADMIN"):
             if actor.role != "TREASURER" or group.treasurer_id != actor.id:
                 raise PermissionDenied("You can only assign members in your own group.")
-        serializer.save()
+        membership = serializer.save()
+
+        # Log action
+        AuditLog.objects.create(
+            actor=actor,
+            target_user=membership.user,
+            action="MEMBERSHIP_CHANGE",
+            notes=f"User assigned to group: {group.name} as {membership.role}"
+        )
 
     def perform_update(self, serializer):
         actor = self.request.user
@@ -81,11 +90,33 @@ class MembershipViewSet(viewsets.ModelViewSet):
         if not (actor.is_superuser or actor.role == "ADMIN"):
             if actor.role != "TREASURER" or membership.group.treasurer_id != actor.id:
                 raise PermissionDenied("You can only update memberships in your own group.")
-        serializer.save()
+        old_role = membership.role
+        membership = serializer.save()
+        new_role = membership.role
+
+        if old_role != new_role:
+            # Log action
+            AuditLog.objects.create(
+                actor=actor,
+                target_user=membership.user,
+                action="MEMBERSHIP_CHANGE",
+                notes=f"Role in group {membership.group.name} changed from {old_role} to {new_role}"
+            )
 
     def perform_destroy(self, instance):
         actor = self.request.user
         if not (actor.is_superuser or actor.role == "ADMIN"):
             if actor.role != "TREASURER" or instance.group.treasurer_id != actor.id:
                 raise PermissionDenied("You can only remove memberships in your own group.")
+        
+        user = instance.user
+        group = instance.group
         instance.delete()
+
+        # Log action
+        AuditLog.objects.create(
+            actor=actor,
+            target_user=user,
+            action="MEMBERSHIP_CHANGE",
+            notes=f"User removed from group: {group.name}"
+        )

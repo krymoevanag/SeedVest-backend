@@ -3,6 +3,7 @@ from django.shortcuts import render
 # Create your views here.# payments/views.py
 import logging
 import json
+import re
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -23,11 +24,15 @@ class InitiateMpesaPaymentView(APIView):
     permission_classes = [AllowAny]
     @staticmethod
     def _normalize_phone(phone: str) -> str:
-        cleaned = str(phone).strip().replace(" ", "")
-        if cleaned.startswith("+254"):
+        cleaned = re.sub(r"[\s\-()]", "", str(phone).strip())
+        if cleaned.startswith("+"):
             cleaned = cleaned[1:]
+        if cleaned.startswith("2540") and len(cleaned) == 13:
+            cleaned = f"254{cleaned[4:]}"
         elif cleaned.startswith("0") and len(cleaned) == 10:
             cleaned = f"254{cleaned[1:]}"
+        elif len(cleaned) == 9 and cleaned[0] in ("7", "1"):
+            cleaned = f"254{cleaned}"
         return cleaned
 
     def post(self, request):
@@ -49,9 +54,14 @@ class InitiateMpesaPaymentView(APIView):
             )
 
         phone = self._normalize_phone(raw_phone)
-        if not phone.startswith("2547") or len(phone) != 12 or not phone.isdigit():
+        if not re.fullmatch(r"254[71]\d{8}", phone):
             return Response(
-                {"error": "Use a valid Safaricom number in format 2547XXXXXXXX."},
+                {
+                    "error": (
+                        "Use a valid Safaricom number in format 07XXXXXXXX, 01XXXXXXXX, "
+                        "2547XXXXXXXX, 2541XXXXXXXX, +2547XXXXXXXX, or +2541XXXXXXXX."
+                    )
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

@@ -13,11 +13,13 @@ from .views import (
     LogoutView,
     AdminStatsView,
     SafeTokenRefreshView,
+    AuditLogViewSet,
 )
 
 # DRF router
 router = DefaultRouter()
 router.register(r"users", UserViewSet, basename="user")
+router.register(r"audit-logs", AuditLogViewSet, basename="audit-log")
 
 urlpatterns = [
     # ViewSet routes
