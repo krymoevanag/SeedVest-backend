@@ -6,8 +6,8 @@
         "simplejwt",
         "viewsets"
     ],
-    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+    "python.defaultInterpreterPath": "d:\\projects\\seedvest\\seedvest_backend\\.venv\\Scripts\\python.exe",
     "python.analysis.extraPaths": [
-        "${workspaceFolder}"
+        "d:\\projects\\seedvest\\seedvest_backend"
     ]
 }
