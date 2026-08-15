@@ -2,6 +2,7 @@ from pathlib import Path
 from datetime import timedelta
 import os
 
+import dj_database_url
 from dotenv import load_dotenv
 # =========================
 # Base directory & ENV load
@@ -24,6 +25,34 @@ ALLOWED_HOSTS = [
     "localhost",
     "192.168.100.60",
 ]
+ALLOWED_HOSTS += [
+    host.strip()
+    for host in os.getenv("ALLOWED_HOSTS", "").split(",")
+    if host.strip()
+]
+
+render_external_hostname = os.getenv("RENDER_EXTERNAL_HOSTNAME")
+if render_external_hostname:
+    ALLOWED_HOSTS.append(render_external_hostname)
+
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CSRF_TRUSTED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+
+if not DEBUG:
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SECURE_SSL_REDIRECT = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_HSTS_SECONDS = int(os.getenv("SECURE_HSTS_SECONDS", "31536000"))
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = (
+        os.getenv("SECURE_HSTS_INCLUDE_SUBDOMAINS", "True").lower() == "true"
+    )
+    SECURE_HSTS_PRELOAD = (
+        os.getenv("SECURE_HSTS_PRELOAD", "True").lower() == "true"
+    )
 
 
 # =========================
@@ -51,6 +80,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -114,16 +144,24 @@ WSGI_APPLICATION = "seedvest.wsgi.application"
 # Database (PostgreSQL from .env)
 # =========================
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": os.getenv("DB_NAME", "seedvest_db"),
-        "USER": os.getenv("DB_USER", "seedvest_admin"),
-        "PASSWORD": os.getenv("DB_PASSWORD", ""),
-        "HOST": os.getenv("DB_HOST", "localhost"),
-        "PORT": os.getenv("DB_PORT", "5432"),
+if os.getenv("DATABASE_URL"):
+    DATABASES = {
+        "default": dj_database_url.config(
+            conn_max_age=600,
+            conn_health_checks=True,
+        )
     }
-}
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": os.getenv("DB_NAME", "seedvest_db"),
+            "USER": os.getenv("DB_USER", "seedvest_admin"),
+            "PASSWORD": os.getenv("DB_PASSWORD", ""),
+            "HOST": os.getenv("DB_HOST", "localhost"),
+            "PORT": os.getenv("DB_PORT", "5432"),
+        }
+    }
 
 # =========================
 # Password validation
@@ -165,7 +203,13 @@ USE_TZ = True
 # Static files
 # =========================
 
-STATIC_URL = "static/"
+STATIC_URL = "/static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+STORAGES = {
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+    },
+}
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
@@ -185,14 +229,15 @@ AUTH_USER_MODEL = "accounts.User"
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 
 EMAIL_HOST = os.getenv("EMAIL_HOST")
-EMAIL_PORT = int(os.getenv("EMAIL_PORT"))
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
 EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS") == "True"
 
 EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER")
 EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD")
 
-DEFAULT_FROM_EMAIL = "SeedVest <seedvest.app@gmail.com>"
-print("EMAIL_HOST:", os.getenv("EMAIL_HOST"))
+DEFAULT_FROM_EMAIL = os.getenv(
+    "DEFAULT_FROM_EMAIL", "SeedVest <seedvest.app@gmail.com>"
+)
 
 AUTHENTICATION_BACKENDS = [
     "accounts.auth_backends.EmailBackend",
@@ -211,3 +256,9 @@ MPESA_PASSKEY = os.getenv("MPESA_PASSKEY")
 MPESA_CALLBACK_URL = os.getenv("MPESA_CALLBACK_URL")
 
 FRONTEND_URL = os.getenv("FRONTEND_URL", "seedvest://")
+BACKEND_URL = os.getenv(
+    "BACKEND_URL",
+    f"https://{render_external_hostname}"
+    if render_external_hostname
+    else "http://localhost:8000",
+).rstrip("/")

@@ -1,0 +1,53 @@
+services:
+  - type: web
+    name: seedvest-api
+    runtime: python
+    plan: free
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput
+    preDeployCommand: python manage.py migrate --noinput
+    startCommand: gunicorn seedvest.wsgi:application --bind 0.0.0.0:$PORT --workers $WEB_CONCURRENCY
+    healthCheckPath: /api/health/
+    autoDeployTrigger: commit
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: seedvest-db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DEBUG
+        value: "False"
+      - key: BACKEND_URL
+        sync: false
+      - key: WEB_CONCURRENCY
+        value: "2"
+      - key: MPESA_CONSUMER_KEY
+        sync: false
+      - key: MPESA_CONSUMER_SECRET
+        sync: false
+      - key: MPESA_SHORTCODE
+        sync: false
+      - key: MPESA_PASSKEY
+        sync: false
+      - key: MPESA_CALLBACK_URL
+        sync: false
+      - key: EMAIL_HOST
+        sync: false
+      - key: EMAIL_PORT
+        value: "587"
+      - key: EMAIL_USE_TLS
+        value: "True"
+      - key: EMAIL_HOST_USER
+        sync: false
+      - key: EMAIL_HOST_PASSWORD
+        sync: false
+      - key: DEFAULT_FROM_EMAIL
+        sync: false
+      - key: FRONTEND_URL
+        value: seedvest://
+
+databases:
+  - name: seedvest-db
+    plan: free
+    region: frankfurt

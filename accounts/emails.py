@@ -55,7 +55,7 @@ Your Membership Number is: {user.membership_number}
 
 You can now log in to the app and access all features.
 
-Login here: http://localhost:3000/login (or via the mobile app)
+You can now log in through the SeedVest mobile app.
 
 Welcome to the community!
 

@@ -15,6 +15,7 @@ from django.db.models import Sum
 from .emails import send_activation_email, send_admin_account_setup_email
 from .models import AuditLog
 from .tokens import account_activation_token
+from .url_utils import build_backend_url, build_frontend_url
 from groups.models import Group, Membership
 from django.conf import settings
 
@@ -98,8 +99,8 @@ class RegisterSerializer(serializers.ModelSerializer):
         uid = urlsafe_base64_encode(force_bytes(user.pk))
         token = account_activation_token.make_token(user)
 
-        activation_link = (
-            f"http://localhost:8000/api/accounts/activate/{uid}/{token}/"
+        activation_link = build_backend_url(
+            f"api/accounts/activate/{uid}/{token}/"
         )
 
         send_activation_email(user.email, activation_link)
@@ -171,12 +172,7 @@ class AdminUserRegistrationSerializer(serializers.ModelSerializer):
             "password_reset_page",
             kwargs={"uid": uid, "token": token},
         )
-        request = self.context.get("request")
-        setup_link = (
-            request.build_absolute_uri(reset_path)
-            if request is not None
-            else f"http://localhost:8000{reset_path}"
-        )
+        setup_link = build_backend_url(reset_path)
         send_admin_account_setup_email(user, setup_link)
 
         if group_ids:
@@ -367,7 +363,7 @@ class PasswordResetRequestSerializer(serializers.Serializer):
         uid = urlsafe_base64_encode(force_bytes(self.user.pk))
         token = PasswordResetTokenGenerator().make_token(self.user)
 
-        reset_link = f"{settings.FRONTEND_URL}/reset-password?uid={uid}&token={token}"
+        reset_link = build_frontend_url(f"reset-password/{uid}/{token}/")
 
         send_mail(
             subject="Reset your password",

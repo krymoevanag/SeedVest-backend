@@ -1,6 +1,8 @@
 # ====================================================
 # DJANGO IMPORTS
 # ====================================================
+import logging
+
 from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
 from django.contrib.auth.password_validation import validate_password
@@ -55,6 +57,7 @@ from .serializers import (
 )
 from .models import User, AuditLog
 from .tokens import account_activation_token
+from .url_utils import build_backend_url, build_frontend_url
 
 
 # ====================================================
@@ -62,6 +65,7 @@ from .tokens import account_activation_token
 # ====================================================
 User = get_user_model()
 token_generator = PasswordResetTokenGenerator()
+logger = logging.getLogger(__name__)
 
 
 def cleanup_unmanaged_user_foreign_keys(user_id):
@@ -256,17 +260,35 @@ class UserViewSet(viewsets.ModelViewSet):
         # Annotate with totals to avoid N+1 in serializer
         queryset = queryset.annotate(
             annotated_savings=Coalesce(
-                Sum('finance_contributions__amount', filter=Q(finance_contributions__status__in=["PAID", "LATE"])),
+                Sum(
+                    'finance_contributions__amount',
+                    filter=Q(
+                        finance_contributions__status__in=["PAID", "LATE"],
+                        finance_contributions__is_archived=False,
+                    ),
+                ),
                 Value(0.0),
                 output_field=FloatField()
             ),
             annotated_cont_penalties=Coalesce(
-                Sum('finance_contributions__penalty', filter=Q(finance_contributions__status__in=["PAID", "LATE"])),
+                Sum(
+                    'finance_contributions__penalty',
+                    filter=Q(
+                        finance_contributions__status__in=["PAID", "LATE"],
+                        finance_contributions__is_archived=False,
+                    ),
+                ),
                 Value(0.0),
                 output_field=FloatField()
             ),
             annotated_standalone_penalties=Coalesce(
-                Sum('penalties__amount', filter=Q(penalties__contribution__isnull=True)),
+                Sum(
+                    'penalties__amount',
+                    filter=Q(
+                        penalties__contribution__isnull=True,
+                        penalties__is_archived=False,
+                    ),
+                ),
                 Value(0.0),
                 output_field=FloatField()
             )
@@ -321,7 +343,7 @@ class UserViewSet(viewsets.ModelViewSet):
             "password_reset_page",
             kwargs={"uid": uid, "token": token},
         )
-        setup_link = request.build_absolute_uri(reset_path)
+        setup_link = build_backend_url(reset_path)
 
         send_admin_account_setup_email(user, setup_link)
 
@@ -563,10 +585,7 @@ class PasswordResetRequestView(APIView):
         uid = urlsafe_base64_encode(force_bytes(user.pk))
         token = token_generator.make_token(user)
 
-        reset_link = f"{settings.FRONTEND_URL}/reset-password/{uid}/{token}/"
-
-        print("Password reset requested for:", user_email)
-        print("Generated link:", reset_link)
+        reset_link = build_frontend_url(f"reset-password/{uid}/{token}/")
 
         html_content = render_to_string(
             "emails/password_reset.html",
@@ -582,14 +601,12 @@ class PasswordResetRequestView(APIView):
 
         email_message.attach_alternative(html_content, "text/html")
 
-        print("Sending email...")
         try:
-            email_message.send(fail_silently=True)
-            print("Email sent successfully.")
-        except Exception as e:
-            print(f"Error sending reset email: {e}")
-            # We don't raise the error here to avoid a 500 response.
-            # The reset link is already printed above for development.
+            email_message.send(fail_silently=False)
+        except Exception:
+            # Keep the response neutral so this endpoint does not reveal
+            # whether an account exists or expose sensitive reset tokens.
+            logger.exception("Password reset email delivery failed")
 
         return Response(
             {"detail": "If an account exists, a reset email has been sent."},
