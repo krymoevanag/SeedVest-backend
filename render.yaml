@@ -5,8 +5,7 @@ services:
     plan: free
     region: frankfurt
     buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput
-    preDeployCommand: python manage.py migrate --noinput
-    startCommand: gunicorn seedvest.wsgi:application --bind 0.0.0.0:$PORT --workers $WEB_CONCURRENCY
+    startCommand: python manage.py migrate --noinput && gunicorn seedvest.wsgi:application --bind 0.0.0.0:$PORT --workers $WEB_CONCURRENCY
     healthCheckPath: /api/health/
     autoDeployTrigger: commit
     envVars:
