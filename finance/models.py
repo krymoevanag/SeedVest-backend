@@ -19,6 +19,11 @@ User = settings.AUTH_USER_MODEL
 
 
 def month_start(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        from datetime import datetime
+        value = datetime.strptime(value, "%Y-%m-%d").date()
     return value.replace(day=1)
 
 

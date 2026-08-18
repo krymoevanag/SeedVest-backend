@@ -788,7 +788,7 @@ class DeleteMemberTests(APITestCase):
                 """
                 CREATE TABLE IF NOT EXISTS authtoken_token (
                     key varchar(40) NOT NULL PRIMARY KEY,
-                    created datetime NULL,
+                    created timestamp NULL,
                     user_id integer NOT NULL
                         REFERENCES accounts_user (id)
                         DEFERRABLE INITIALLY DEFERRED
