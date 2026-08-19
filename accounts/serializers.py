@@ -195,6 +195,11 @@ class AdminUserRegistrationSerializer(serializers.ModelSerializer):
         raw_password = validated_data.pop("password", None)
         email = validated_data.get("email")
 
+        # If no password provided and no email, generate initial temporary password
+        if not raw_password and not email:
+            import secrets
+            raw_password = f"Seed{secrets.randbelow(8999) + 1000}!"
+
         # If no email is provided, set active=True immediately
         is_active = True if not email or raw_password else False
 
@@ -209,6 +214,8 @@ class AdminUserRegistrationSerializer(serializers.ModelSerializer):
             is_active=is_active,
             application_status="APPROVED",
         )
+
+        user.initial_password = raw_password
 
         if not user.membership_number:
             user.membership_number = user.generate_membership_number()

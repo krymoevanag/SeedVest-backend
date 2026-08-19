@@ -99,6 +99,10 @@ class RegistrationTests(APITestCase):
         }
         response = self.client.post(url, data)
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertFalse(response.data.get("has_email"))
+        self.assertIn("credentials", response.data)
+        self.assertEqual(response.data["credentials"]["phone_number"], "254799999999")
+        self.assertTrue(response.data["credentials"]["initial_password"])
 
         user = User.objects.get(phone_number="254799999999")
         self.assertIsNone(user.email)

@@ -304,6 +304,7 @@ class UserViewSet(viewsets.ModelViewSet):
     def admin_register(self, request):
         """
         Allows admins to register new members directly.
+        Returns email setup info if email was provided, or initial credentials if no email was provided.
         """
         serializer = AdminUserRegistrationSerializer(
             data=request.data, 
@@ -311,14 +312,29 @@ class UserViewSet(viewsets.ModelViewSet):
         )
         if serializer.is_valid():
             user = serializer.save()
-            return Response(
-                {
-                    "message": "User registered successfully by admin",
-                    "user_id": user.id,
-                    "membership_number": user.membership_number
-                },
-                status=status.HTTP_201_CREATED
-            )
+
+            response_data = {
+                "message": "User registered successfully",
+                "user_id": user.id,
+                "membership_number": user.membership_number,
+                "has_email": bool(user.email),
+            }
+
+            if user.email:
+                response_data["message"] = f"Member registered successfully. An account setup email notification has been sent to {user.email}."
+                response_data["email_sent"] = True
+            else:
+                initial_pass = getattr(user, "initial_password", None) or "Set by Admin"
+                response_data["message"] = "Member registered successfully. Since no email address was provided, please share the initial credentials below with the member."
+                response_data["credentials"] = {
+                    "name": f"{user.first_name} {user.last_name}".strip(),
+                    "membership_number": user.membership_number,
+                    "phone_number": user.phone_number,
+                    "login_identifier": user.phone_number or user.membership_number,
+                    "initial_password": initial_pass,
+                }
+
+            return Response(response_data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     @action(detail=True, methods=["post"], url_path="resend-setup-link")
