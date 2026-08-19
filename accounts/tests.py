@@ -323,6 +323,65 @@ class AdminRegistrationInviteFlowTests(APITestCase):
         self.assertIn("error", response.data)
         self.assertFalse(mock_send.called)
 
+    def test_password_reset_request_for_no_email_account_creates_admin_notification(self):
+        admin = User.objects.create_superuser(
+            email="admin_reset@test.com",
+            password="AdminPassword123!",
+        )
+        no_email_user = User.objects.create_user(
+            email=None,
+            first_name="NoEmail",
+            last_name="Member",
+            phone_number="254788888888",
+            password="Password123!",
+            role="MEMBER",
+            is_active=True,
+            is_approved=True,
+            application_status="APPROVED",
+        )
+        no_email_user.membership_number = "MBR-2026-9999"
+        no_email_user.save()
+
+        response = self.client.post(
+            reverse("password-reset"),
+            {"email": "254788888888"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data.get("has_email"))
+        self.assertIn("contact your admin", response.data.get("detail"))
+
+        # Check that Admin received a notification
+        from notifications.models import Notification
+        self.assertTrue(
+            Notification.objects.filter(recipient=admin, title__icontains="No Email").exists()
+        )
+
+    def test_admin_can_reset_member_password_directly(self):
+        admin = User.objects.create_superuser(
+            email="admin_direct_reset@test.com",
+            password="AdminPassword123!",
+        )
+        self.client.force_authenticate(user=admin)
+        member = User.objects.create_user(
+            email=None,
+            first_name="Direct",
+            last_name="Reset",
+            phone_number="254777777777",
+            password="OldPassword123!",
+            role="MEMBER",
+            is_active=True,
+            is_approved=True,
+        )
+
+        url = reverse("user-admin-reset-password", args=[member.id])
+        response = self.client.post(url, {"new_password": "NewDirectPassword123!"}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        member.refresh_from_db()
+        self.assertTrue(member.check_password("NewDirectPassword123!"))
+
 
 # -------------------------
 # Membership Activation Tests

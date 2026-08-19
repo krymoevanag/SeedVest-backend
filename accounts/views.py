@@ -9,7 +9,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.core.exceptions import ValidationError
 from django.core.mail import EmailMultiAlternatives
-from django.db.models import Sum
+from django.db.models import Sum, Q
 from django.db import connection
 from django.urls import reverse
 from django.shortcuts import render
@@ -524,6 +524,38 @@ class UserViewSet(viewsets.ModelViewSet):
             status=status.HTTP_200_OK,
         )
 
+    @action(detail=True, methods=["post"], url_path="admin-reset-password")
+    def admin_reset_password(self, request, pk=None):
+        user = self.get_object()
+        new_password = request.data.get("new_password")
+
+        if not new_password or len(str(new_password).strip()) < 6:
+            return Response(
+                {"error": "New password is required and must be at least 6 characters long."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user.set_password(new_password)
+        update_fields = ["password"]
+        if not user.is_active:
+            user.is_active = True
+            update_fields.append("is_active")
+
+        user.save(update_fields=update_fields)
+
+        from .models import AuditLog
+        AuditLog.objects.create(
+            actor=request.user,
+            target_user=user,
+            action="PASSWORD_RESET",
+            notes=f"Admin ({request.user.email}) reset password for member ID {user.id} ({user.email or user.membership_number or user.phone_number})."
+        )
+
+        return Response(
+            {"message": f"Password for {user.first_name} {user.last_name} updated successfully."},
+            status=status.HTTP_200_OK,
+        )
+
     @action(detail=False, methods=["get", "patch", "put"], permission_classes=[IsAuthenticated])
     def me(self, request):
         user = request.user
@@ -572,16 +604,59 @@ class PasswordResetRequestView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        user_email = request.data.get("email")
+        identifier = (
+            request.data.get("email")
+            or request.data.get("username")
+            or request.data.get("identifier")
+            or ""
+        ).strip()
+
+        if not identifier:
+            return Response(
+                {"detail": "Please enter an Email, Phone Number, or Membership Number."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         try:
-            user = User.objects.get(email=user_email)
-        except User.DoesNotExist:
+            user = User.objects.filter(
+                Q(email__iexact=identifier.lower())
+                | Q(phone_number=identifier)
+                | Q(membership_number__iexact=identifier)
+            ).first()
+        except Exception:
+            user = None
+
+        if not user:
             return Response(
-                {"detail": "If an account exists, a reset email has been sent."},
+                {"detail": "If an account exists with a registered email address, a password reset link has been sent."},
                 status=status.HTTP_200_OK,
             )
 
+        # If user has no email address:
+        if not user.email:
+            # Notify admins/treasurers so they can reset password for this member
+            from notifications.models import Notification
+            admins = User.objects.filter(role__in=["ADMIN", "TREASURER"], is_active=True)
+            member_name = f"{user.first_name} {user.last_name}".strip() or user.membership_number or "Member"
+            for admin in admins:
+                Notification.objects.create(
+                    recipient=admin,
+                    title="Password Reset Request (No Email)",
+                    message=f"{member_name} (ID: {user.membership_number or user.id}, Phone: {user.phone_number or 'N/A'}) requested a password reset but has no registered email.",
+                    category="SYSTEM",
+                    type="WARNING",
+                    link="/governance/members",
+                )
+
+            return Response(
+                {
+                    "detail": f"Account found ({user.membership_number or 'Member'}). This account has no registered email address. A notification has been sent to group administrators. Please contact your admin or treasurer to receive your new password.",
+                    "has_email": False,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        # If user has an email address, build and dispatch the email
         uid = urlsafe_base64_encode(force_bytes(user.pk))
         token = token_generator.make_token(user)
 
@@ -612,7 +687,7 @@ class PasswordResetRequestView(APIView):
         threading.Thread(target=_send_reset_email, daemon=True).start()
 
         return Response(
-            {"detail": "If an account exists, a reset email has been sent."},
+            {"detail": "If an account exists with a registered email address, a password reset link has been sent.", "has_email": True},
             status=status.HTTP_200_OK,
         )
 
