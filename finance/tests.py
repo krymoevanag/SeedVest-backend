@@ -8,7 +8,8 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import get_user_model
 
 from groups.models import Group, Membership
-from .models import Contribution, Penalty
+from .cycle_services import FinancialCycleService
+from .models import Contribution, Penalty, MonthlyContributionRecord
 
 User = get_user_model()
 
@@ -244,13 +245,20 @@ class AdminAddContributionTests(APITestCase):
         self.assertTrue(Contribution.objects.filter(id=contribution.id).exists())
 
     def test_admin_can_reset_member_financial_account(self):
-        Contribution.objects.create(
+        contribution = Contribution.objects.create(
             user=self.member,
             group=self.group,
             amount="1800.00",
             due_date=date.today(),
             status="PAID",
             paid_date=date.today(),
+        )
+        linked_penalty = Penalty.objects.create(
+            user=self.member,
+            contribution=contribution,
+            amount="75.00",
+            reason="Linked penalty",
+            applied_by=self.admin,
         )
         Penalty.objects.create(
             user=self.member,
@@ -272,14 +280,48 @@ class AdminAddContributionTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["archived_contributions"], 1)
         self.assertEqual(response.data["archived_standalone_penalties"], 1)
+        self.assertEqual(response.data["archived_linked_penalties"], 1)
+        self.assertEqual(response.data["archived_penalties_total"], 2)
+        self.assertFalse(response.data["account_status_reset"])
+        self.assertFalse(response.data["account_status_reset_requested"])
+        self.assertTrue(response.data["account_preserved"])
         self.assertEqual(
             Contribution.objects.filter(user=self.member, is_archived=True).count(),
             1,
         )
         self.assertEqual(
             Penalty.objects.filter(user=self.member, is_archived=True).count(),
-            1,
+            2,
         )
+        linked_penalty.refresh_from_db()
+        self.assertTrue(linked_penalty.is_archived)
+
+    def test_member_refresh_preserves_account_identity_when_reset_requested(self):
+        self.member.membership_number = "MBR-2026-0099"
+        self.member.save(update_fields=["membership_number"])
+        Contribution.objects.create(
+            user=self.member,
+            group=self.group,
+            amount="900.00",
+            due_date=date.today(),
+            status="PAID",
+            paid_date=date.today(),
+        )
+
+        response = self.client.post(
+            reverse("admin-reset-member-finance"),
+            {
+                "user_id": self.member.id,
+                "reset_account_status": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.member.refresh_from_db()
+        self.assertTrue(self.member.is_approved)
+        self.assertEqual(self.member.application_status, "APPROVED")
+        self.assertEqual(self.member.membership_number, "MBR-2026-0099")
 
 
 class AdminMemberFinancialOversightTests(APITestCase):
@@ -397,6 +439,63 @@ class AdminMemberFinancialOversightTests(APITestCase):
         self.assertEqual(stats["member_count"], 2)
         self.assertEqual(float(stats["total_savings"]), 1800.0)
         self.assertEqual(float(stats["total_penalties"]), 120.0)
+
+    def test_archiving_contribution_refreshes_member_balance_and_monthly_record(self):
+        FinancialCycleService.sync_monthly_record_from_contribution(self.member_one_paid)
+        self.member_one_paid.financial_cycle.refresh_totals()
+
+        response = self.client.delete(
+            reverse("contribution-detail", args=[self.member_one_paid.id]),
+            {"reason": "Duplicate payment"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        monthly_record = MonthlyContributionRecord.objects.get(
+            user=self.member_one.id,
+            group=self.group.id,
+            financial_cycle=self.member_one_paid.financial_cycle,
+            month=self.member_one_paid.contribution_month,
+        )
+        self.assertEqual(monthly_record.actual_contribution_paid, Decimal("0.00"))
+        self.assertIsNone(monthly_record.source_contribution)
+
+        member_list = self.client.get(
+            reverse("admin-member-list"),
+            {"group_id": self.group.id},
+        )
+        self.assertEqual(member_list.status_code, status.HTTP_200_OK)
+        by_user_id = {item["user_id"]: item for item in member_list.data}
+        self.assertEqual(float(by_user_id[self.member_one.id]["savings_balance"]), 0.0)
+
+    def test_leadership_can_filter_and_sort_member_contribution_breakdown(self):
+        response = self.client.get(
+            reverse("contribution-list"),
+            {
+                "group_id": self.group.id,
+                "user_id": self.member_one.id,
+                "ordering": "-amount",
+            },
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 2)
+        self.assertEqual(response.data[0]["user"], self.member_one.id)
+        self.assertEqual(response.data[1]["user"], self.member_one.id)
+        self.assertEqual(Decimal(response.data[0]["amount"]), Decimal("1000.00"))
+        self.assertEqual(Decimal(response.data[1]["amount"]), Decimal("700.00"))
+
+        filtered = self.client.get(
+            reverse("contribution-list"),
+            {
+                "group_id": self.group.id,
+                "user_id": self.member_one.id,
+                "status": "PENDING",
+            },
+        )
+        self.assertEqual(filtered.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(filtered.data), 1)
+        self.assertEqual(filtered.data[0]["id"], self.member_one_pending.id)
 
 
 class PenaltyEndpointTests(APITestCase):

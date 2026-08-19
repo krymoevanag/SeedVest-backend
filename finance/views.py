@@ -95,18 +95,65 @@ class ContributionViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
+        queryset = Contribution.objects.select_related(
+            "user",
+            "group",
+            "financial_cycle",
+            "reviewed_by",
+        ).filter(is_archived=False)
 
-        if user.is_superuser or user.role == "ADMIN":
-            return Contribution.objects.filter(is_archived=False)
+        if not user.is_superuser and user.role != "ADMIN":
+            if user.role == "TREASURER":
+                queryset = queryset.filter(group__treasurer=user)
+            elif user.role == "FINANCIAL_SECRETARY":
+                user_groups = user.membership_set.values_list("group_id", flat=True)
+                queryset = queryset.filter(group_id__in=user_groups)
+            elif user.role == "MEMBER":
+                queryset = queryset.filter(user=user)
+            else:
+                return Contribution.objects.none()
 
-        if user.role in ["TREASURER", "FINANCIAL_SECRETARY"]:
-            user_groups = user.membership_set.values_list('group_id', flat=True)
-            return Contribution.objects.filter(group_id__in=user_groups, is_archived=False)
+        group_id = self.request.query_params.get("group_id")
+        if group_id:
+            queryset = queryset.filter(group_id=group_id)
 
-        if user.role == "MEMBER":
-            return Contribution.objects.filter(user=user, is_archived=False)
+        cycle_id = self.request.query_params.get("cycle_id")
+        if cycle_id:
+            queryset = queryset.filter(financial_cycle_id=cycle_id)
 
-        return Contribution.objects.none()
+        member_id = self.request.query_params.get("user_id")
+        if member_id:
+            queryset = queryset.filter(user_id=member_id)
+
+        status_value = self.request.query_params.get("status")
+        if status_value:
+            queryset = queryset.filter(status=status_value)
+
+        date_from = self.request.query_params.get("date_from")
+        if date_from:
+            queryset = queryset.filter(created_at__date__gte=date_from)
+
+        date_to = self.request.query_params.get("date_to")
+        if date_to:
+            queryset = queryset.filter(created_at__date__lte=date_to)
+
+        allowed_ordering = {
+            "amount",
+            "-amount",
+            "created_at",
+            "-created_at",
+            "due_date",
+            "-due_date",
+            "paid_date",
+            "-paid_date",
+            "status",
+            "-status",
+        }
+        ordering = self.request.query_params.get("ordering", "-created_at")
+        if ordering not in allowed_ordering:
+            ordering = "-created_at"
+
+        return queryset.order_by(ordering, "-id")
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
@@ -274,6 +321,7 @@ class ContributionViewSet(viewsets.ModelViewSet):
         with transaction.atomic():
             contribution.is_archived = True
             contribution.save(update_fields=["is_archived"])
+            FinancialCycleService.sync_monthly_record_from_contribution(contribution)
             
             # Audit Logging
             AuditLog.objects.create(
@@ -1186,59 +1234,75 @@ class AdminResetMemberFinanceView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         target_user = serializer.validated_data["user_obj"]
-        reset_account_status = serializer.validated_data.get(
+        reset_account_status_requested = serializer.validated_data.get(
             "reset_account_status",
             False,
         )
 
         reset_report = ReportService.get_user_reset_report(target_user)
-
-        archived_contributions = Contribution.objects.filter(
+        active_contributions = Contribution.objects.filter(
             user=target_user,
             is_archived=False,
-        ).update(is_archived=True)
-        archived_penalties = Penalty.objects.filter(
-            user=target_user,
-            contribution__isnull=True,
-            is_archived=False,
-        ).update(is_archived=True)
-        MonthlyContributionRecord.objects.filter(
-            user=target_user,
-            is_archived=False,
-        ).update(is_archived=True)
-
-        if reset_account_status:
-            target_user.is_approved = False
-            target_user.application_status = "UNDER_REVIEW"
-            target_user.membership_number = None
-            target_user.save(
-                update_fields=[
-                    "is_approved",
-                    "application_status",
-                    "membership_number",
-                ]
-            )
-
-        from accounts.models import AuditLog
-
-        AuditLog.objects.create(
-            actor=actor,
-            target_user=target_user,
-            action="DEACTIVATION",
-            notes=(
-                "Financial account reset. "
-                f"Archived contributions: {archived_contributions}, "
-                f"archived standalone penalties: {archived_penalties}, "
-                f"reset_account_status: {str(reset_account_status).lower()}."
-            ),
         )
+        affected_cycle_ids = list(
+            active_contributions.exclude(financial_cycle__isnull=True)
+            .values_list("financial_cycle_id", flat=True)
+            .distinct()
+        )
+        active_penalties = Penalty.objects.filter(
+            user=target_user,
+            is_archived=False,
+        )
+        archived_standalone_penalties = active_penalties.filter(
+            contribution__isnull=True,
+        ).count()
+        archived_linked_penalties = active_penalties.exclude(
+            contribution__isnull=True,
+        ).count()
+
+        with transaction.atomic():
+            archived_contributions = active_contributions.update(is_archived=True)
+            archived_penalties_total = active_penalties.update(is_archived=True)
+            archived_monthly_records = MonthlyContributionRecord.objects.filter(
+                user=target_user,
+                is_archived=False,
+            ).update(is_archived=True)
+
+            for cycle_id in affected_cycle_ids:
+                cycle = FinancialCycle.objects.filter(pk=cycle_id).first()
+                if cycle:
+                    cycle.refresh_totals()
+
+            from accounts.models import AuditLog
+
+            AuditLog.objects.create(
+                actor=actor,
+                target_user=target_user,
+                action="FINANCE_ARCHIVE",
+                notes=(
+                    "Member financial account refresh completed. "
+                    f"Archived contributions: {archived_contributions}, "
+                    f"archived penalties: {archived_penalties_total}, "
+                    f"archived monthly records: {archived_monthly_records}, "
+                    f"reset_account_status_requested: {str(reset_account_status_requested).lower()}, "
+                    "account preserved: true."
+                ),
+            )
 
         return Response(
             {
-                "detail": "Member financial account has been archived.",
+                "detail": (
+                    "Member financial records have been archived. "
+                    "The member account, profile, and group memberships were preserved."
+                ),
                 "archived_contributions": archived_contributions,
-                "archived_standalone_penalties": archived_penalties,
-                "account_status_reset": reset_account_status,
+                "archived_penalties_total": archived_penalties_total,
+                "archived_standalone_penalties": archived_standalone_penalties,
+                "archived_linked_penalties": archived_linked_penalties,
+                "archived_monthly_records": archived_monthly_records,
+                "account_status_reset": False,
+                "account_status_reset_requested": reset_account_status_requested,
+                "account_preserved": True,
                 "reset_report": reset_report,
             },
             status=status.HTTP_200_OK,

@@ -57,15 +57,44 @@ class FinancialCycleService:
 
     @staticmethod
     def sync_monthly_record_from_contribution(contribution):
-        if contribution.is_archived:
-            return None
-
         cycle = contribution.financial_cycle or FinancialCycleService.ensure_cycle_for_group(
             group=contribution.group,
             reference_date=contribution.due_date,
         )
 
         month = contribution.contribution_month or contribution.due_date.replace(day=1)
+        if contribution.is_archived:
+            replacement = (
+                Contribution.objects.filter(
+                    user=contribution.user,
+                    group=contribution.group,
+                    financial_cycle=cycle,
+                    contribution_month=month,
+                    is_archived=False,
+                )
+                .exclude(pk=contribution.pk)
+                .order_by("-paid_date", "-created_at", "-id")
+                .first()
+            )
+            if replacement:
+                return FinancialCycleService.sync_monthly_record_from_contribution(replacement)
+
+            monthly = MonthlyContributionRecord.objects.filter(
+                user=contribution.user,
+                group=contribution.group,
+                financial_cycle=cycle,
+                month=month,
+            ).first()
+            if not monthly:
+                return None
+
+            monthly.actual_contribution_paid = Decimal("0.00")
+            monthly.payment_date = None
+            if monthly.source_contribution_id == contribution.id:
+                monthly.source_contribution = None
+            monthly.save()
+            return monthly
+
         monthly, _ = MonthlyContributionRecord.objects.get_or_create(
             user=contribution.user,
             group=contribution.group,

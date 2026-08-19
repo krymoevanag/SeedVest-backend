@@ -601,12 +601,15 @@ class PasswordResetRequestView(APIView):
 
         email_message.attach_alternative(html_content, "text/html")
 
-        try:
-            email_message.send(fail_silently=False)
-        except Exception:
-            # Keep the response neutral so this endpoint does not reveal
-            # whether an account exists or expose sensitive reset tokens.
-            logger.exception("Password reset email delivery failed")
+        import threading
+
+        def _send_reset_email():
+            try:
+                email_message.send(fail_silently=False)
+            except Exception:
+                logger.exception("Password reset email delivery failed")
+
+        threading.Thread(target=_send_reset_email, daemon=True).start()
 
         return Response(
             {"detail": "If an account exists, a reset email has been sent."},
