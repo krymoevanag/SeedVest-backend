@@ -59,6 +59,29 @@ class RegistrationTests(APITestCase):
             is_active=True,
             is_approved=True,
         )
+        group = Group.objects.create(
+            name="Registration Group",
+            description="Group for registration test",
+            treasurer=treasurer,
+        )
+
+        url = reverse("register")
+        data = {
+            "email": "member3@test.com",
+            "first_name": "Member",
+            "last_name": "Three",
+            "password": "TestPass123!",
+            "password2": "TestPass123!",
+            "terms_accepted": True,
+            "group_id": group.id,
+        }
+        response = self.client.post(url, data)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        user = User.objects.get(email="member3@test.com")
+        self.assertTrue(
+            Membership.objects.filter(user=user, group=group, role="MEMBER").exists()
+        )
 
     def test_admin_registration_without_email_succeeds(self):
         admin = User.objects.create_superuser(
@@ -90,30 +113,6 @@ class RegistrationTests(APITestCase):
         # Test login using Membership Number
         login_resp_mbr = self.client.post(login_url, {"email": user.membership_number, "password": "Password123!"})
         self.assertEqual(login_resp_mbr.status_code, status.HTTP_200_OK)
-
-        group = Group.objects.create(
-            name="Registration Group",
-            description="Group for registration test",
-            treasurer=treasurer,
-        )
-
-        url = reverse("register")
-        data = {
-            "email": "member3@test.com",
-            "first_name": "Member",
-            "last_name": "Three",
-            "password": "TestPass123!",
-            "password2": "TestPass123!",
-            "terms_accepted": True,
-            "group_id": group.id,
-        }
-        response = self.client.post(url, data)
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-
-        user = User.objects.get(email="member3@test.com")
-        self.assertTrue(
-            Membership.objects.filter(user=user, group=group, role="MEMBER").exists()
-        )
 
     def test_user_registration_fails_with_invalid_group(self):
         url = reverse("register")
