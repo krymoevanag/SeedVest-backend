@@ -181,7 +181,39 @@ class ApprovalTests(APITestCase):
 
         self.pending_user.refresh_from_db()
         self.assertTrue(self.pending_user.is_approved)
+        self.assertTrue(self.pending_user.is_active)
         self.assertIsNotNone(self.pending_user.membership_number)
+
+    def test_self_registered_user_can_login_with_own_password_after_approval(self):
+        self_registered_user = User.objects.create_user(
+            email="selfreg@test.com",
+            password="MySelfPassword123!",
+            first_name="Self",
+            last_name="Reg",
+            phone_number="254711223344",
+            is_approved=False,
+            is_active=False,
+            application_status="UNDER_REVIEW",
+        )
+
+        url = reverse("user-approve", args=[self_registered_user.id])
+        response = self.client.post(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self_registered_user.refresh_from_db()
+        self.assertTrue(self_registered_user.is_approved)
+        self.assertTrue(self_registered_user.is_active)
+        self.assertIsNotNone(self_registered_user.membership_number)
+
+        # Login using registered password and email
+        self.client.credentials()  # clear admin token
+        login_url = reverse("login")
+        login_resp = self.client.post(login_url, {"email": "selfreg@test.com", "password": "MySelfPassword123!"})
+        self.assertEqual(login_resp.status_code, status.HTTP_200_OK)
+
+        # Login using registered password and membership_number
+        login_resp_mbr = self.client.post(login_url, {"email": self_registered_user.membership_number, "password": "MySelfPassword123!"})
+        self.assertEqual(login_resp_mbr.status_code, status.HTTP_200_OK)
 
 
 # -------------------------

@@ -389,13 +389,23 @@ class UserViewSet(viewsets.ModelViewSet):
             notes=f"Member approved with ID: {user.membership_number}"
         )
 
-        return Response(
-            {
-                "message": "User approved successfully",
+        response_data = {
+            "message": f"Member {user.first_name} {user.last_name} approved successfully.",
+            "membership_number": user.membership_number,
+            "has_email": bool(user.email),
+        }
+
+        if user.email:
+            response_data["message"] += f" An approval email notification has been sent to {user.email}."
+        else:
+            response_data["message"] += f" Since this member has no email, please inform them that their Membership Number is {user.membership_number} and they can log in using their registered password."
+            response_data["member_info"] = {
+                "name": f"{user.first_name} {user.last_name}".strip(),
                 "membership_number": user.membership_number,
-            },
-            status=status.HTTP_200_OK,
-        )
+                "phone_number": user.phone_number,
+            }
+
+        return Response(response_data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["post"])
     def reject(self, request, pk=None):

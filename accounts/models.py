@@ -59,8 +59,10 @@ class User(AbstractUser):
 
     def approve_member(self, actor=None):
         if self.application_status != "APPROVED":
-            self.membership_number = self.generate_membership_number()
+            if not self.membership_number:
+                self.membership_number = self.generate_membership_number()
             self.is_approved = True
+            self.is_active = True
             self.application_status = "APPROVED"
             self.save()
 
@@ -70,7 +72,7 @@ class User(AbstractUser):
             Notification.objects.create(
                 recipient=self,
                 title="Membership Approved",
-                message=f"Congratulations! Your account has been approved. Your membership number is {self.membership_number}.",
+                message=f"Congratulations! Your account has been approved. Your Membership Number is {self.membership_number}. You can log in using the password you created during registration.",
                 type="SUCCESS",
                 link="/dashboard",
             )

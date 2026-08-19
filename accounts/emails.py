@@ -79,11 +79,11 @@ Dear {user.first_name},
 
 Congratulations! Your membership application for SeedVest has been approved.
 
-Your Membership Number is: {user.membership_number}
+Your Account Details:
+- Membership Number: {user.membership_number}
+- Login Identifier: {user.email or user.phone_number or user.membership_number}
 
-You can now log in to the app and access all features.
-
-You can now log in through the SeedVest mobile app.
+You can log in immediately through the SeedVest mobile app using the password you created during registration.
 
 Welcome to the community!
 
