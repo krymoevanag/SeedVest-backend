@@ -26,6 +26,7 @@ User = get_user_model()
 # REGISTRATION + EMAIL ACTIVATION
 # ====================================================
 class RegisterSerializer(serializers.ModelSerializer):
+    email = serializers.EmailField(required=False, allow_blank=True, allow_null=True)
     password2 = serializers.CharField(write_only=True)
     terms_accepted = serializers.BooleanField(write_only=True)
     group_id = serializers.IntegerField(write_only=True, required=False)
@@ -47,6 +48,24 @@ class RegisterSerializer(serializers.ModelSerializer):
         }
 
     def validate(self, attrs):
+        email = attrs.get("email")
+        if email:
+            email = email.strip().lower()
+            if not email:
+                attrs["email"] = None
+            else:
+                attrs["email"] = email
+                if User.objects.filter(email=email).exists():
+                    raise serializers.ValidationError({"email": "A user with this email already exists."})
+        else:
+            attrs["email"] = None
+
+        phone = (attrs.get("phone_number") or "").strip()
+        if not attrs.get("email") and not phone:
+            raise serializers.ValidationError(
+                {"email": "At least an email address or phone number must be provided."}
+            )
+
         if not attrs.get("terms_accepted", False):
             raise serializers.ValidationError(
                 {"terms_accepted": "You must accept the Terms & Conditions."}
@@ -76,16 +95,17 @@ class RegisterSerializer(serializers.ModelSerializer):
         validated_data.pop("terms_accepted")
         group = validated_data.pop("group_obj", None)
         validated_data.pop("group_id", None)
+        email = validated_data.get("email")
 
         user = User.objects.create_user(
-            email=validated_data["email"],
+            email=email,
             first_name=validated_data["first_name"],
             last_name=validated_data["last_name"],
             phone_number=validated_data.get("phone_number", ""),
             password=validated_data["password"],
             role="MEMBER",
             is_approved=False,
-            is_active=False,
+            is_active=False if email else True,
             application_status="PENDING",
         )
 
@@ -96,14 +116,14 @@ class RegisterSerializer(serializers.ModelSerializer):
                 role="MEMBER",
             )
 
-        uid = urlsafe_base64_encode(force_bytes(user.pk))
-        token = account_activation_token.make_token(user)
+        if email:
+            uid = urlsafe_base64_encode(force_bytes(user.pk))
+            token = account_activation_token.make_token(user)
 
-        activation_link = build_backend_url(
-            f"api/accounts/activate/{uid}/{token}/"
-        )
-
-        send_activation_email(user.email, activation_link)
+            activation_link = build_backend_url(
+                f"api/accounts/activate/{uid}/{token}/"
+            )
+            send_activation_email(user.email, activation_link)
 
         return user
 
@@ -114,9 +134,11 @@ class RegisterSerializer(serializers.ModelSerializer):
 class AdminUserRegistrationSerializer(serializers.ModelSerializer):
     """
     Serializer for admins to invite users directly.
-    Users are pre-approved but remain inactive until they set a password
-    through the emailed setup link.
+    If an email is provided, an account setup email is sent.
+    If no email is provided, the user is active immediately so they can log in via Phone / Membership Number.
     """
+    email = serializers.EmailField(required=False, allow_blank=True, allow_null=True)
+    password = serializers.CharField(required=False, allow_blank=True, write_only=True)
     role = serializers.ChoiceField(choices=User.ROLE_CHOICES, default='MEMBER')
     group_ids = serializers.ListField(
         child=serializers.IntegerField(min_value=1),
@@ -132,9 +154,30 @@ class AdminUserRegistrationSerializer(serializers.ModelSerializer):
             "first_name",
             "last_name",
             "phone_number",
+            "password",
             "role",
             "group_ids",
         )
+
+    def validate(self, attrs):
+        email = attrs.get("email")
+        if email:
+            email = email.strip().lower()
+            if not email:
+                attrs["email"] = None
+            else:
+                attrs["email"] = email
+                if User.objects.filter(email=email).exists():
+                    raise serializers.ValidationError({"email": "A user with this email already exists."})
+        else:
+            attrs["email"] = None
+
+        phone = (attrs.get("phone_number") or "").strip()
+        if not attrs.get("email") and not phone:
+            raise serializers.ValidationError(
+                {"email": "At least an email address or phone number must be provided."}
+            )
+        return attrs
 
     def validate_group_ids(self, value):
         if not value:
@@ -149,16 +192,21 @@ class AdminUserRegistrationSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         group_ids = validated_data.pop("group_ids", [])
+        raw_password = validated_data.pop("password", None)
+        email = validated_data.get("email")
+
+        # If no email is provided, set active=True immediately
+        is_active = True if not email or raw_password else False
 
         user = User.objects.create_user(
-            email=validated_data["email"],
+            email=email,
             first_name=validated_data["first_name"],
             last_name=validated_data["last_name"],
             phone_number=validated_data.get("phone_number", ""),
-            password=None,
+            password=raw_password,
             role=validated_data.get("role", "MEMBER"),
             is_approved=True,
-            is_active=False,
+            is_active=is_active,
             application_status="APPROVED",
         )
 
@@ -166,14 +214,15 @@ class AdminUserRegistrationSerializer(serializers.ModelSerializer):
             user.membership_number = user.generate_membership_number()
             user.save(update_fields=["membership_number"])
 
-        uid = urlsafe_base64_encode(force_bytes(user.pk))
-        token = PasswordResetTokenGenerator().make_token(user)
-        reset_path = reverse(
-            "password_reset_page",
-            kwargs={"uid": uid, "token": token},
-        )
-        setup_link = build_backend_url(reset_path)
-        send_admin_account_setup_email(user, setup_link)
+        if email:
+            uid = urlsafe_base64_encode(force_bytes(user.pk))
+            token = PasswordResetTokenGenerator().make_token(user)
+            reset_path = reverse(
+                "password_reset_page",
+                kwargs={"uid": uid, "token": token},
+            )
+            setup_link = build_backend_url(reset_path)
+            send_admin_account_setup_email(user, setup_link)
 
         if group_ids:
             membership_role = "TREASURER" if user.role == "TREASURER" else "MEMBER"

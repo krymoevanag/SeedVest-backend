@@ -59,6 +59,38 @@ class RegistrationTests(APITestCase):
             is_active=True,
             is_approved=True,
         )
+
+    def test_admin_registration_without_email_succeeds(self):
+        admin = User.objects.create_superuser(
+            email="admin_noemail@test.com",
+            password="AdminPassword123!",
+        )
+        self.client.force_authenticate(user=admin)
+        url = reverse("user-admin-register")
+        data = {
+            "first_name": "NoEmail",
+            "last_name": "User",
+            "phone_number": "254799999999",
+            "password": "Password123!",
+            "role": "MEMBER",
+        }
+        response = self.client.post(url, data)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        user = User.objects.get(phone_number="254799999999")
+        self.assertIsNone(user.email)
+        self.assertTrue(user.is_active)
+        self.assertTrue(user.is_approved)
+
+        # Test login using Phone Number
+        login_url = reverse("login")
+        login_resp = self.client.post(login_url, {"email": "254799999999", "password": "Password123!"})
+        self.assertEqual(login_resp.status_code, status.HTTP_200_OK)
+
+        # Test login using Membership Number
+        login_resp_mbr = self.client.post(login_url, {"email": user.membership_number, "password": "Password123!"})
+        self.assertEqual(login_resp_mbr.status_code, status.HTTP_200_OK)
+
         group = Group.objects.create(
             name="Registration Group",
             description="Group for registration test",

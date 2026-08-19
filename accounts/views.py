@@ -136,15 +136,15 @@ class LoginView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        email = request.data.get("email")
+        email = request.data.get("email") or request.data.get("username") or request.data.get("identifier")
         password = request.data.get("password")
 
         if isinstance(email, str):
-            email = email.strip().lower()
+            email = email.strip()
 
         if not email or not password:
             return Response(
-                {"error": "Email and password are required"},
+                {"error": "Email/Phone/Membership Number and password are required"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

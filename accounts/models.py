@@ -8,11 +8,20 @@ from .validators import validate_profile_picture_size
 class User(AbstractUser):
     username = None  # ✅ fully removed
 
-    email = models.EmailField(unique=True)
+    email = models.EmailField(unique=True, null=True, blank=True)
     phone_number = models.CharField(max_length=20, blank=True, null=True)
 
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS = []
+
+    def save(self, *args, **kwargs):
+        if self.email:
+            self.email = self.email.strip().lower()
+            if not self.email:
+                self.email = None
+        else:
+            self.email = None
+        super().save(*args, **kwargs)
 
     ROLE_CHOICES = (
         ("ADMIN", "Admin"),

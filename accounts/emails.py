@@ -11,18 +11,22 @@ def _send_email_async(subject, message, from_email, recipient_list, fail_silentl
     Dispatches email sending to a background daemon thread so HTTP request handlers
     and database transactions are never blocked by SMTP timeouts or network latency.
     """
+    valid_recipients = [r for r in (recipient_list or []) if r and str(r).strip()]
+    if not valid_recipients:
+        return
+
     def _target():
         try:
             send_mail(
                 subject=subject,
                 message=message,
                 from_email=from_email,
-                recipient_list=recipient_list,
+                recipient_list=valid_recipients,
                 fail_silently=fail_silently,
                 html_message=html_message,
             )
         except Exception as e:
-            logger.warning(f"Background email delivery to {recipient_list} failed: {e}")
+            logger.warning(f"Background email delivery to {valid_recipients} failed: {e}")
 
     thread = threading.Thread(target=_target, daemon=True)
     thread.start()
