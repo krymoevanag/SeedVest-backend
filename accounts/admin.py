@@ -21,7 +21,7 @@ class UserAdmin(BaseUserAdmin):
     # Make membership_number read-only so it isn't accidentally overwritten on edit
     readonly_fields = ('membership_number', 'date_joined', 'last_login')
 
-    # Custom fieldsets (username has been removed from the model)
+
     fieldsets = (
         (None, {'fields': ('email', 'password')}),
         ('Personal Info', {'fields': ('first_name', 'last_name', 'phone_number', 'profile_picture')}),
