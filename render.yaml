@@ -18,7 +18,13 @@ services:
       - key: DEBUG
         value: "False"
       - key: BACKEND_URL
-        sync: false
+        # Public canonical API origin. Change this if a custom API domain is
+        # added, and keep it without the /api/ suffix.
+        value: https://seedvest-api.onrender.com
+      - key: ALLOWED_HOSTS
+        value: seedvest-api.onrender.com
+      - key: CSRF_TRUSTED_ORIGINS
+        value: https://seedvest-api.onrender.com
       - key: WEB_CONCURRENCY
         value: "2"
       - key: MPESA_CONSUMER_KEY
@@ -30,13 +36,16 @@ services:
       - key: MPESA_PASSKEY
         sync: false
       - key: MPESA_CALLBACK_URL
-        sync: false
+        # Daraja must call the stable public URL, never a local or ngrok URL.
+        value: https://seedvest-api.onrender.com/api/payments/mpesa/callback/
       - key: EMAIL_HOST
         sync: false
       - key: EMAIL_PORT
         value: "587"
       - key: EMAIL_USE_TLS
         value: "True"
+      - key: EMAIL_TIMEOUT
+        value: "20"
       - key: EMAIL_HOST_USER
         sync: false
       - key: EMAIL_HOST_PASSWORD

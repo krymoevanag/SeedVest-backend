@@ -1,35 +1,46 @@
 import logging
-import threading
 from django.core.mail import send_mail
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
 
-def _send_email_async(subject, message, from_email, recipient_list, fail_silently=True, html_message=None):
+def _send_email(subject, message, from_email, recipient_list, html_message=None):
     """
-    Dispatches email sending to a background daemon thread so HTTP request handlers
-    and database transactions are never blocked by SMTP timeouts or network latency.
+    Send an email before the request finishes and report any delivery failure.
+
+    Daemon threads are not reliable in short-lived Gunicorn workers: the worker can
+    finish or restart before the SMTP exchange completes. EMAIL_TIMEOUT bounds the
+    wait, while logging makes a production SMTP problem visible in Render logs.
     """
     valid_recipients = [r for r in (recipient_list or []) if r and str(r).strip()]
     if not valid_recipients:
-        return
+        logger.warning("Email was not sent because it has no recipient")
+        return False
 
-    def _target():
-        try:
-            send_mail(
-                subject=subject,
-                message=message,
-                from_email=from_email,
-                recipient_list=valid_recipients,
-                fail_silently=fail_silently,
-                html_message=html_message,
-            )
-        except Exception as e:
-            logger.warning(f"Background email delivery to {valid_recipients} failed: {e}")
+    try:
+        sent_count = send_mail(
+            subject=subject,
+            message=message,
+            from_email=from_email,
+            recipient_list=valid_recipients,
+            fail_silently=False,
+            html_message=html_message,
+        )
+    except Exception:
+        logger.exception("Email delivery to %s failed", valid_recipients)
+        return False
 
-    thread = threading.Thread(target=_target, daemon=True)
-    thread.start()
+    if sent_count != len(valid_recipients):
+        logger.error(
+            "SMTP accepted %s of %s email recipient(s): %s",
+            sent_count,
+            len(valid_recipients),
+            valid_recipients,
+        )
+        return False
+
+    return True
 
 
 def send_activation_email(email, activation_link):
@@ -43,12 +54,11 @@ Please activate your account by clicking the link below:
 
 If you didn’t register, ignore this email.
 """
-    _send_email_async(
+    _send_email(
         subject,
         message,
         settings.DEFAULT_FROM_EMAIL,
         [email],
-        fail_silently=True,
     )
 
 
@@ -63,12 +73,11 @@ Click the link below to reset your password:
 
 If you did not request this, please ignore this email.
 """
-    _send_email_async(
+    _send_email(
         subject,
         message,
         settings.DEFAULT_FROM_EMAIL,
         [email],
-        fail_silently=True,
     )
 
 
@@ -90,12 +99,11 @@ Welcome to the community!
 Best regards,
 SeedVest Team
 """
-    _send_email_async(
+    _send_email(
         subject,
         message,
         settings.DEFAULT_FROM_EMAIL,
         [user.email],
-        fail_silently=True,
     )
 
 
@@ -116,12 +124,11 @@ If you believe this is an error or have questions, please contact the administra
 Best regards,
 SeedVest Team
 """
-    _send_email_async(
+    _send_email(
         subject,
         message,
         settings.DEFAULT_FROM_EMAIL,
         [user.email],
-        fail_silently=True,
     )
 
 
@@ -139,12 +146,11 @@ This change is effective immediately. You may need to log out and log back in to
 Best regards,
 SeedVest Team
 """
-    _send_email_async(
+    _send_email(
         subject,
         message,
         settings.DEFAULT_FROM_EMAIL,
         [user.email],
-        fail_silently=True,
     )
 
 
@@ -166,12 +172,11 @@ For security reasons, please change your password immediately after your first l
 Best regards,
 SeedVest Team
 """
-    _send_email_async(
+    _send_email(
         subject,
         message,
         settings.DEFAULT_FROM_EMAIL,
         [email],
-        fail_silently=True,
     )
 
 
@@ -191,12 +196,11 @@ If you did not expect this email, please contact support.
 Best regards,
 SeedVest Team
 """
-    _send_email_async(
+    _send_email(
         subject,
         message,
         settings.DEFAULT_FROM_EMAIL,
         [user.email],
-        fail_silently=True,
     )
 
 
@@ -218,12 +222,11 @@ Please log in to the SeedVest app to view complete details.
 Best regards,
 SeedVest Team
 """
-    _send_email_async(
+    _send_email(
         subject,
         message,
         settings.DEFAULT_FROM_EMAIL,
         [user.email],
-        fail_silently=True,
     )
 
 
@@ -242,10 +245,9 @@ Please log in to the SeedVest app to view details and settle the penalty.
 Best regards,
 SeedVest Team
 """
-    _send_email_async(
+    _send_email(
         subject,
         message,
         settings.DEFAULT_FROM_EMAIL,
         [user.email],
-        fail_silently=True,
     )

@@ -702,15 +702,18 @@ class PasswordResetRequestView(APIView):
 
         email_message.attach_alternative(html_content, "text/html")
 
-        import threading
-
-        def _send_reset_email():
-            try:
-                email_message.send(fail_silently=False)
-            except Exception:
-                logger.exception("Password reset email delivery failed")
-
-        threading.Thread(target=_send_reset_email, daemon=True).start()
+        try:
+            sent_count = email_message.send(fail_silently=False)
+            if sent_count != 1:
+                logger.error(
+                    "SMTP accepted %s password-reset recipient(s) for user %s",
+                    sent_count,
+                    user.pk,
+                )
+        except Exception:
+            # Keep the generic response to avoid revealing whether an account
+            # exists, but retain the full error in Render's logs for diagnosis.
+            logger.exception("Password reset email delivery failed for user %s", user.pk)
 
         return Response(
             {"detail": "If an account exists with a registered email address, a password reset link has been sent.", "has_email": True},

@@ -399,8 +399,8 @@ class ChangePasswordSerializer(serializers.Serializer):
 # PASSWORD RESET
 # ====================================================
 from django.conf import settings
-from django.core.mail import send_mail
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
+from .emails import send_password_reset_email
 
 
 class PasswordResetRequestSerializer(serializers.Serializer):
@@ -421,12 +421,9 @@ class PasswordResetRequestSerializer(serializers.Serializer):
 
         reset_link = build_frontend_url(f"reset-password/{uid}/{token}/")
 
-        send_mail(
-            subject="Reset your password",
-            message=f"Click the link below to reset your password:\n\n{reset_link}",
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[self.user.email],
-        )
+        # Use the shared async helper — keeps SMTP off the main request thread
+        # and logs errors at ERROR level instead of silently swallowing them.
+        send_password_reset_email(self.user.email, reset_link)
 
 
 class PasswordResetConfirmSerializer(serializers.Serializer):

@@ -134,16 +134,19 @@ Use the actual URL shown in the Render dashboard if it differs.
 | `DATABASE_URL` | Nothing. It is supplied automatically from `seedvest-db`. |
 | `SECRET_KEY` | Nothing. Render generates it because `generateValue: true` is set. |
 | `DEBUG` | Already set to `False` in `render.yaml`. Do not change it. |
-| `BACKEND_URL` | `https://YOUR-RENDER-URL` with no trailing slash. |
+| `BACKEND_URL` | Already set to the canonical Render URL in `render.yaml`. When using a custom API domain, set `https://YOUR-API-DOMAIN` with no trailing slash. |
+| `ALLOWED_HOSTS` | Already set for `seedvest-api.onrender.com`. With a custom API domain, include both API hostnames, comma-separated. |
+| `CSRF_TRUSTED_ORIGINS` | Already set for the Render URL. With a custom API domain, include both HTTPS origins, comma-separated. |
 | `WEB_CONCURRENCY` | Already set to `2`. |
 | `MPESA_CONSUMER_KEY` | Newly rotated Daraja key. |
 | `MPESA_CONSUMER_SECRET` | Newly rotated Daraja secret. |
 | `MPESA_SHORTCODE` | The matching sandbox or production shortcode. |
 | `MPESA_PASSKEY` | The matching sandbox or production passkey. |
-| `MPESA_CALLBACK_URL` | `https://YOUR-RENDER-URL/api/payments/mpesa/callback/` |
+| `MPESA_CALLBACK_URL` | Already set to the Render callback URL. With a custom API domain, set `https://YOUR-API-DOMAIN/api/payments/mpesa/callback/`. |
 | `EMAIL_HOST` | Your SMTP host, for example `smtp.gmail.com`. |
 | `EMAIL_PORT` | Already set to `587`. |
 | `EMAIL_USE_TLS` | Already set to `True`. |
+| `EMAIL_TIMEOUT` | Already set to `20` seconds. |
 | `EMAIL_HOST_USER` | SeedVest sender mailbox address. |
 | `EMAIL_HOST_PASSWORD` | A newly generated SMTP/Gmail app password. |
 | `DEFAULT_FROM_EMAIL` | Example: `SeedVest <sender@example.com>`. |
@@ -151,6 +154,37 @@ Use the actual URL shown in the Render dashboard if it differs.
 
 Do not add the local-only `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, or
 `DB_PORT` settings to Render. `DATABASE_URL` replaces them in production.
+
+### Gmail SMTP setup and verification
+
+For a Gmail sender, configure the following values individually in **Service →
+Environment**. `EMAIL_HOST_USER` must be the Gmail address that owns the App
+Password, and `DEFAULT_FROM_EMAIL` should use that same address.
+
+```text
+EMAIL_HOST=smtp.gmail.com
+EMAIL_PORT=587
+EMAIL_USE_TLS=True
+EMAIL_HOST_USER=your-sender@gmail.com
+EMAIL_HOST_PASSWORD=your-16-character-Google-App-Password
+DEFAULT_FROM_EMAIL=SeedVest <your-sender@gmail.com>
+EMAIL_TIMEOUT=20
+```
+
+Do not use the normal Gmail account password. Enable two-step verification for
+the sender account and create a Google App Password instead.
+
+After deploying, open **Service → Shell** and send one message to an address
+you control. A printed `1` means the SMTP server accepted the message; a
+traceback in the shell identifies the invalid setting.
+
+```bash
+python manage.py shell -c "from django.conf import settings; from django.core.mail import send_mail; print(send_mail('SeedVest SMTP test', 'If you received this, SMTP is configured correctly.', settings.DEFAULT_FROM_EMAIL, ['your-address@example.com'], fail_silently=False))"
+```
+
+The API returns a generic success response for password-reset requests to avoid
+revealing account existence. If an email cannot be delivered, check the Render
+logs for `Email delivery` or `Password reset email delivery failed`.
 
 ### Optional custom domain
 
@@ -274,6 +308,10 @@ flutter build appbundle --release
 Test the release APK on a physical phone using mobile data, not only on local
 Wi-Fi. Verify login, logout, password reset, profile upload, notifications,
 and a sandbox M-Pesa flow.
+
+The mobile API client allows up to 90 seconds for its first Render response.
+This accommodates a free-service cold start. For consistently fast responses
+and reliable payment callbacks, use an always-on paid Render web service.
 
 ## 12. Media uploads before real users
 
