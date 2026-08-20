@@ -8,7 +8,6 @@ from django.contrib.auth import authenticate, get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.core.exceptions import ValidationError
-from django.core.mail import EmailMultiAlternatives
 from django.db.models import Sum, Q
 from django.db import connection
 from django.urls import reverse
@@ -42,6 +41,7 @@ from finance.models import Contribution, Penalty
 from .emails import (
     send_admin_account_setup_email,
     send_membership_rejected_email,
+    send_password_reset_email,
     send_role_updated_email,
 )
 from .permissions import IsAdminOrTreasurer, IsApprovedUser
@@ -127,6 +127,24 @@ class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
     serializer_class = RegisterSerializer
     permission_classes = [AllowAny]
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        user = serializer.instance
+        headers = self.get_success_headers(serializer.data)
+
+        response_data = serializer.data
+        if user.email:
+            response_data["email_sent"] = bool(getattr(user, "email_sent", False))
+            response_data["message"] = (
+                "Registration submitted. Check your email to activate your account."
+                if response_data["email_sent"]
+                else "Registration submitted, but the activation email could not be delivered. Please contact support."
+            )
+
+        return Response(response_data, status=status.HTTP_201_CREATED, headers=headers)
 
 
 # ====================================================
@@ -321,8 +339,13 @@ class UserViewSet(viewsets.ModelViewSet):
             }
 
             if user.email:
-                response_data["message"] = f"Member registered successfully. An account setup email notification has been sent to {user.email}."
-                response_data["email_sent"] = True
+                email_sent = bool(getattr(user, "email_sent", False))
+                response_data["email_sent"] = email_sent
+                response_data["message"] = (
+                    f"Member registered successfully. An account setup email has been sent to {user.email}."
+                    if email_sent
+                    else "Member registered successfully, but the account setup email could not be delivered. Check the SMTP configuration and use Resend Setup Link after correcting it."
+                )
             else:
                 initial_pass = getattr(user, "initial_password", None) or "Set by Admin"
                 response_data["message"] = "Member registered successfully. Since no email address was provided, please share the initial credentials below with the member."
@@ -361,10 +384,15 @@ class UserViewSet(viewsets.ModelViewSet):
         )
         setup_link = build_backend_url(reset_path)
 
-        send_admin_account_setup_email(user, setup_link)
+        email_sent = bool(send_admin_account_setup_email(user, setup_link))
 
         return Response(
-            {"message": "Setup link sent successfully."},
+            {
+                "message": "Setup link sent successfully."
+                if email_sent
+                else "Setup link was not delivered. Check the SMTP configuration and server logs.",
+                "email_sent": email_sent,
+            },
             status=status.HTTP_200_OK,
         )
 
@@ -378,7 +406,7 @@ class UserViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        user.approve_member(actor=request.user)
+        email_sent = bool(user.approve_member(actor=request.user))
 
         # Log action
         from .models import AuditLog
@@ -396,7 +424,12 @@ class UserViewSet(viewsets.ModelViewSet):
         }
 
         if user.email:
-            response_data["message"] += f" An approval email notification has been sent to {user.email}."
+            response_data["email_sent"] = email_sent
+            response_data["message"] += (
+                f" An approval email notification has been sent to {user.email}."
+                if email_sent
+                else " The approval email could not be delivered; check the SMTP configuration and server logs."
+            )
         else:
             response_data["message"] += f" Since this member has no email, please inform them that their Membership Number is {user.membership_number} and they can log in using their registered password."
             response_data["member_info"] = {
@@ -693,27 +726,15 @@ class PasswordResetRequestView(APIView):
             {"reset_link": reset_link},
         )
 
-        email_message = EmailMultiAlternatives(
-            subject="Reset Your SeedVest Password",
-            body=f"Use this link to reset your password: {reset_link}",
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            to=[user.email],
+        email_sent = send_password_reset_email(
+            user.email,
+            reset_link,
+            html_message=html_content,
         )
-
-        email_message.attach_alternative(html_content, "text/html")
-
-        try:
-            sent_count = email_message.send(fail_silently=False)
-            if sent_count != 1:
-                logger.error(
-                    "SMTP accepted %s password-reset recipient(s) for user %s",
-                    sent_count,
-                    user.pk,
-                )
-        except Exception:
+        if not email_sent:
             # Keep the generic response to avoid revealing whether an account
-            # exists, but retain the full error in Render's logs for diagnosis.
-            logger.exception("Password reset email delivery failed for user %s", user.pk)
+            # exists, but retain the failure in Render's logs for diagnosis.
+            logger.error("Password reset email delivery failed for user %s", user.pk)
 
         return Response(
             {"detail": "If an account exists with a registered email address, a password reset link has been sent.", "has_email": True},

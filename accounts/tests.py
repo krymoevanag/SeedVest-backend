@@ -5,6 +5,7 @@ from rest_framework import status
 from django.contrib.auth import get_user_model
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.db import connection
+from django.test import override_settings
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
@@ -18,9 +19,11 @@ User = get_user_model()
 # -------------------------
 # Registration Tests
 # -------------------------
+@override_settings(SECURE_SSL_REDIRECT=False)
 class RegistrationTests(APITestCase):
 
-    def test_user_registration_creates_unapproved_user(self):
+    @patch("accounts.serializers.send_activation_email", return_value=True)
+    def test_user_registration_creates_unapproved_user(self, mock_send):
         url = reverse("register")
         data = {
             "email": "member1@test.com",
@@ -32,10 +35,32 @@ class RegistrationTests(APITestCase):
         }
         response = self.client.post(url, data)
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(response.data["email_sent"])
+        mock_send.assert_called_once()
 
         user = User.objects.get(email="member1@test.com")
         self.assertFalse(user.is_approved)
         self.assertFalse(user.is_active)
+
+    @patch("accounts.serializers.send_activation_email", return_value=False)
+    def test_registration_reports_activation_email_delivery_failure(self, mock_send):
+        response = self.client.post(
+            reverse("register"),
+            {
+                "email": "mail-failure@test.com",
+                "first_name": "Mail",
+                "last_name": "Failure",
+                "password": "TestPass123!",
+                "password2": "TestPass123!",
+                "terms_accepted": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertFalse(response.data["email_sent"])
+        self.assertIn("could not be delivered", response.data["message"])
+        mock_send.assert_called_once()
 
     def test_user_registration_fails_without_terms_acceptance(self):
         url = reverse("register")
@@ -51,7 +76,8 @@ class RegistrationTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("terms_accepted", response.data)
 
-    def test_user_registration_with_group_creates_membership(self):
+    @patch("accounts.serializers.send_activation_email", return_value=True)
+    def test_user_registration_with_group_creates_membership(self, _mock_send):
         treasurer = User.objects.create_user(
             email="treasurer@test.com",
             password="Treasurer123!",
@@ -154,6 +180,7 @@ class LoginRestrictionTests(APITestCase):
 # -------------------------
 # Approval Tests
 # -------------------------
+@override_settings(SECURE_SSL_REDIRECT=False)
 class ApprovalTests(APITestCase):
 
     def setUp(self):
@@ -174,7 +201,8 @@ class ApprovalTests(APITestCase):
         refresh = RefreshToken.for_user(self.admin)
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
 
-    def test_admin_can_approve_user(self):
+    @patch("accounts.emails.send_membership_approved_email", return_value=True)
+    def test_admin_can_approve_user(self, mock_send):
         url = reverse("user-approve", args=[self.pending_user.id])
         response = self.client.post(url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -183,8 +211,20 @@ class ApprovalTests(APITestCase):
         self.assertTrue(self.pending_user.is_approved)
         self.assertTrue(self.pending_user.is_active)
         self.assertIsNotNone(self.pending_user.membership_number)
+        self.assertTrue(response.data["email_sent"])
+        mock_send.assert_called_once_with(self.pending_user)
 
-    def test_self_registered_user_can_login_with_own_password_after_approval(self):
+    @patch("accounts.emails.send_membership_approved_email", return_value=False)
+    def test_approval_reports_email_delivery_failure(self, mock_send):
+        response = self.client.post(reverse("user-approve", args=[self.pending_user.id]))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["email_sent"])
+        self.assertIn("could not be delivered", response.data["message"])
+        mock_send.assert_called_once_with(self.pending_user)
+
+    @patch("accounts.emails.send_membership_approved_email", return_value=True)
+    def test_self_registered_user_can_login_with_own_password_after_approval(self, _mock_send):
         self_registered_user = User.objects.create_user(
             email="selfreg@test.com",
             password="MySelfPassword123!",
@@ -219,6 +259,7 @@ class ApprovalTests(APITestCase):
 # -------------------------
 # Admin Registration Invite Flow Tests
 # -------------------------
+@override_settings(SECURE_SSL_REDIRECT=False)
 class AdminRegistrationInviteFlowTests(APITestCase):
 
     def setUp(self):
@@ -256,9 +297,29 @@ class AdminRegistrationInviteFlowTests(APITestCase):
         self.assertIsNotNone(user.membership_number)
 
         self.assertTrue(mock_send.called)
+        self.assertTrue(response.data["email_sent"])
         args, _kwargs = mock_send.call_args
         self.assertEqual(args[0].id, user.id)
         self.assertIn("/reset-password/", args[1])
+
+    @patch("accounts.serializers.send_admin_account_setup_email", return_value=False)
+    def test_admin_registration_reports_setup_email_delivery_failure(self, mock_send):
+        response = self.client.post(
+            reverse("user-admin-register"),
+            {
+                "email": "undelivered-invite@test.com",
+                "first_name": "Undelivered",
+                "last_name": "Invite",
+                "phone_number": "+254700000099",
+                "role": "MEMBER",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertFalse(response.data["email_sent"])
+        self.assertIn("could not be delivered", response.data["message"])
+        mock_send.assert_called_once()
 
     def test_password_reset_confirm_activates_approved_inactive_user(self):
         user = User.objects.create_user(
@@ -617,6 +678,7 @@ class TokenRefreshTests(APITestCase):
 # -------------------------
 # Password Reset Tests
 # -------------------------
+@override_settings(SECURE_SSL_REDIRECT=False)
 class PasswordResetTests(APITestCase):
 
     def setUp(self):
@@ -627,8 +689,8 @@ class PasswordResetTests(APITestCase):
             is_approved=True,
         )
 
-    @patch("accounts.views.EmailMultiAlternatives.send", return_value=1)
-    def test_password_reset_request_existing_user_returns_200(self, _mock_send):
+    @patch("accounts.views.send_password_reset_email", return_value=True)
+    def test_password_reset_request_existing_user_returns_200(self, mock_send):
         url = reverse("password-reset")
         response = self.client.post(
             url,
@@ -637,6 +699,7 @@ class PasswordResetTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn("detail", response.data)
+        mock_send.assert_called_once()
 
     def test_password_reset_request_unknown_user_returns_200(self):
         url = reverse("password-reset")
@@ -703,6 +766,7 @@ class PasswordResetTests(APITestCase):
 # -------------------------
 # User Me Endpoint Tests
 # -------------------------
+@override_settings(SECURE_SSL_REDIRECT=False)
 class UserMeEndpointTests(APITestCase):
 
     def setUp(self):
@@ -733,6 +797,76 @@ class UserMeEndpointTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["first_name"], "Updated")
+
+    def test_authenticated_phone_only_user_can_add_email_to_profile(self):
+        phone_only_user = User.objects.create_user(
+            email=None,
+            phone_number="254711111111",
+            password="PhonePass123!",
+            first_name="Phone",
+            last_name="Only",
+            is_active=True,
+            is_approved=True,
+        )
+        refresh = RefreshToken.for_user(phone_only_user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+        response = self.client.patch(
+            reverse("user-me"),
+            {"email": "  member.reset@example.com  "},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["email"], "member.reset@example.com")
+        phone_only_user.refresh_from_db()
+        self.assertEqual(phone_only_user.email, "member.reset@example.com")
+
+    @patch("accounts.views.send_password_reset_email", return_value=True)
+    def test_added_profile_email_can_receive_password_reset(self, mock_send):
+        phone_only_user = User.objects.create_user(
+            email=None,
+            phone_number="254722222222",
+            password="PhonePass123!",
+            first_name="Reset",
+            last_name="Member",
+            is_active=True,
+            is_approved=True,
+        )
+        refresh = RefreshToken.for_user(phone_only_user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+        self.client.patch(
+            reverse("user-me"),
+            {"email": "reset.member@example.com"},
+            format="json",
+        )
+
+        self.client.credentials()
+        response = self.client.post(
+            reverse("password-reset"),
+            {"email": "reset.member@example.com"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_send.assert_called_once()
+
+    def test_profile_email_must_be_unique_case_insensitively(self):
+        User.objects.create_user(
+            email="taken@example.com",
+            password="TakenPass123!",
+            is_active=True,
+            is_approved=True,
+        )
+
+        response = self.client.patch(
+            reverse("user-me"),
+            {"email": "TAKEN@example.com"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("email", response.data)
 
     def test_unauthenticated_user_cannot_get_me_profile(self):
         self.client.credentials()

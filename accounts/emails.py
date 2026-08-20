@@ -18,6 +18,18 @@ def _send_email(subject, message, from_email, recipient_list, html_message=None)
         logger.warning("Email was not sent because it has no recipient")
         return False
 
+    missing_settings = [
+        name
+        for name in ("EMAIL_HOST", "EMAIL_HOST_USER", "EMAIL_HOST_PASSWORD")
+        if not getattr(settings, name, None)
+    ]
+    if missing_settings:
+        logger.error(
+            "Email was not sent because SMTP is not configured: missing %s",
+            ", ".join(missing_settings),
+        )
+        return False
+
     try:
         sent_count = send_mail(
             subject=subject,
@@ -54,7 +66,7 @@ Please activate your account by clicking the link below:
 
 If you didn’t register, ignore this email.
 """
-    _send_email(
+    return _send_email(
         subject,
         message,
         settings.DEFAULT_FROM_EMAIL,
@@ -62,7 +74,7 @@ If you didn’t register, ignore this email.
     )
 
 
-def send_password_reset_email(email, reset_link):
+def send_password_reset_email(email, reset_link, html_message=None):
     subject = "Reset your SeedVest password"
     message = f"""
 You requested a password reset.
@@ -73,11 +85,12 @@ Click the link below to reset your password:
 
 If you did not request this, please ignore this email.
 """
-    _send_email(
+    return _send_email(
         subject,
         message,
         settings.DEFAULT_FROM_EMAIL,
         [email],
+        html_message=html_message,
     )
 
 
@@ -99,7 +112,7 @@ Welcome to the community!
 Best regards,
 SeedVest Team
 """
-    _send_email(
+    return _send_email(
         subject,
         message,
         settings.DEFAULT_FROM_EMAIL,
@@ -124,7 +137,7 @@ If you believe this is an error or have questions, please contact the administra
 Best regards,
 SeedVest Team
 """
-    _send_email(
+    return _send_email(
         subject,
         message,
         settings.DEFAULT_FROM_EMAIL,
@@ -146,7 +159,7 @@ This change is effective immediately. You may need to log out and log back in to
 Best regards,
 SeedVest Team
 """
-    _send_email(
+    return _send_email(
         subject,
         message,
         settings.DEFAULT_FROM_EMAIL,
@@ -172,7 +185,7 @@ For security reasons, please change your password immediately after your first l
 Best regards,
 SeedVest Team
 """
-    _send_email(
+    return _send_email(
         subject,
         message,
         settings.DEFAULT_FROM_EMAIL,
@@ -196,7 +209,7 @@ If you did not expect this email, please contact support.
 Best regards,
 SeedVest Team
 """
-    _send_email(
+    return _send_email(
         subject,
         message,
         settings.DEFAULT_FROM_EMAIL,
@@ -222,7 +235,7 @@ Please log in to the SeedVest app to view complete details.
 Best regards,
 SeedVest Team
 """
-    _send_email(
+    return _send_email(
         subject,
         message,
         settings.DEFAULT_FROM_EMAIL,
@@ -245,7 +258,7 @@ Please log in to the SeedVest app to view details and settle the penalty.
 Best regards,
 SeedVest Team
 """
-    _send_email(
+    return _send_email(
         subject,
         message,
         settings.DEFAULT_FROM_EMAIL,

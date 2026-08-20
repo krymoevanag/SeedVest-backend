@@ -116,6 +116,7 @@ class RegisterSerializer(serializers.ModelSerializer):
                 role="MEMBER",
             )
 
+        user.email_sent = False
         if email:
             uid = urlsafe_base64_encode(force_bytes(user.pk))
             token = account_activation_token.make_token(user)
@@ -123,7 +124,7 @@ class RegisterSerializer(serializers.ModelSerializer):
             activation_link = build_backend_url(
                 f"api/accounts/activate/{uid}/{token}/"
             )
-            send_activation_email(user.email, activation_link)
+            user.email_sent = send_activation_email(user.email, activation_link)
 
         return user
 
@@ -216,6 +217,7 @@ class AdminUserRegistrationSerializer(serializers.ModelSerializer):
         )
 
         user.initial_password = raw_password
+        user.email_sent = False
 
         if not user.membership_number:
             user.membership_number = user.generate_membership_number()
@@ -229,7 +231,7 @@ class AdminUserRegistrationSerializer(serializers.ModelSerializer):
                 kwargs={"uid": uid, "token": token},
             )
             setup_link = build_backend_url(reset_path)
-            send_admin_account_setup_email(user, setup_link)
+            user.email_sent = send_admin_account_setup_email(user, setup_link)
 
         if group_ids:
             membership_role = "TREASURER" if user.role == "TREASURER" else "MEMBER"
@@ -281,6 +283,15 @@ class MembershipActivationSerializer(serializers.Serializer):
 
 
 class UserProfileSerializer(serializers.ModelSerializer):
+    # Email is optional for phone-only members, but it must be editable so a
+    # member can add or correct an address for password-reset emails.
+    # Handle uniqueness here after normalising its casing and whitespace.
+    email = serializers.EmailField(
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        validators=[],
+    )
     full_name = serializers.SerializerMethodField()
     total_savings = serializers.SerializerMethodField()
     total_penalties = serializers.SerializerMethodField()
@@ -306,7 +317,6 @@ class UserProfileSerializer(serializers.ModelSerializer):
         )
         read_only_fields = (
             "id",
-            "email",
             "full_name",
             "role",
             "is_superuser",
@@ -316,6 +326,22 @@ class UserProfileSerializer(serializers.ModelSerializer):
             "total_penalties",
             "group_ids",
         )
+
+    def validate_email(self, value):
+        email = (value or "").strip().lower()
+        if not email:
+            return None
+
+        existing_users = User.objects.filter(email__iexact=email)
+        if self.instance:
+            existing_users = existing_users.exclude(pk=self.instance.pk)
+
+        if existing_users.exists():
+            raise serializers.ValidationError(
+                "A user with this email address already exists."
+            )
+
+        return email
 
     def get_full_name(self, obj):
         return f"{obj.first_name} {obj.last_name}".strip() or obj.email
@@ -421,8 +447,8 @@ class PasswordResetRequestSerializer(serializers.Serializer):
 
         reset_link = build_frontend_url(f"reset-password/{uid}/{token}/")
 
-        # Use the shared async helper — keeps SMTP off the main request thread
-        # and logs errors at ERROR level instead of silently swallowing them.
+        # Use the shared delivery helper so SMTP failures are logged instead of
+        # being silently swallowed.
         send_password_reset_email(self.user.email, reset_link)
 
 

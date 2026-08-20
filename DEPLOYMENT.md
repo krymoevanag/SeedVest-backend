@@ -149,6 +149,16 @@ Use the actual URL shown in the Render dashboard if it differs.
 | `DEFAULT_FROM_EMAIL` | Example: `SeedVest <sender@example.com>`. |
 | `FRONTEND_URL` | Keep `seedvest://` for Flutter password-reset deep links. |
 
+`EMAIL_HOST_USER` must be the same mailbox used by `DEFAULT_FROM_EMAIL` (or
+the address inside its angle brackets). For Gmail, `EMAIL_HOST_PASSWORD` must
+be a 16-character **App Password**, not the mailbox's normal password. These
+three secret values are marked `sync: false` and therefore must be entered in
+the Render dashboard; they are not populated from this repository.
+
+After saving the variables, redeploy the service. A registration, approval, or
+admin invite now reports `email_sent: false` when SMTP fails. In that case,
+open Render Logs and search for `Email delivery` or `SMTP is not configured`.
+
 Do not add the local-only `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, or
 `DB_PORT` settings to Render. `DATABASE_URL` replaces them in production.
 

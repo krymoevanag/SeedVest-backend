@@ -77,8 +77,11 @@ class User(AbstractUser):
                 link="/dashboard",
             )
 
-            # Send Email
-            send_membership_approved_email(self)
+            # Return the delivery result so the approving administrator is not
+            # told an email was sent when SMTP delivery failed.
+            return send_membership_approved_email(self) if self.email else False
+
+        return False
 
     def generate_membership_number(self):
         from datetime import datetime
