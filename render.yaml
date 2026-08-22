@@ -1,66 +1,60 @@
-# Exported from Render on 2026-08-22T14:00:16Z
-version: "1"
 services:
-- type: web
-  name: seedvest-api
-  runtime: python
-  repo: https://github.com/krymoevanag/SeedVest-backend
-  plan: free
-  envVars:
-  - key: FIREBASE_PRIVATE_KEY
-    sync: false
-  - key: FIREBASE_CLIENT_EMAIL
-    sync: false
-  - key: FIREBASE_PROJECT_ID
-    sync: false
-  - key: EMAIL_PROVIDER
-    sync: false
-  - key: WEB_CONCURRENCY
-    sync: false
-  - key: MPESA_CALLBACK_URL
-    sync: false
-  - key: FRONTEND_URL
-    sync: false
-  - key: EMAIL_PORT
-    sync: false
-  - key: DEBUG
-    sync: false
-  - key: CSRF_TRUSTED_ORIGINS
-    sync: false
-  - key: BACKEND_URL
-    sync: false
-  - key: ALLOWED_HOSTS
-    sync: false
-  - key: EMAIL_TIMEOUT
-    sync: false
-  - key: EMAIL_HOST_PASSWORD
-    sync: false
-  - key: EMAIL_HOST
-    sync: false
-  - key: DEFAULT_FROM_EMAIL
-    sync: false
-  - key: EMAIL_HOST_USER
-    sync: false
-  - key: INITIAL_ADMIN_EMAIL
-    sync: false
-  - key: MPESA_SHORTCODE
-    sync: false
-  - key: MPESA_PASSKEY
-    sync: false
-  - key: MPESA_CONSUMER_SECRET
-    sync: false
-  - key: MPESA_CONSUMER_KEY
-    sync: false
-  - key: EMAIL_USE_TLS
-    sync: false
-  - key: SECRET_KEY
-    sync: false
-  - key: DATABASE_URL
-    sync: false
-  region: frankfurt
-  buildCommand: pip install -r requirements.txt && python manage.py collectstatic
-    --noinput
-  startCommand: python manage.py migrate --noinput && gunicorn seedvest.wsgi:application
-    --bind 0.0.0.0:$PORT --workers $WEB_CONCURRENCY
-  healthCheckPath: /api/health/
-  autoDeployTrigger: commit
+  - type: web
+    name: seedvest-api
+    runtime: python
+    plan: free
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput
+    startCommand: python manage.py migrate --noinput && python manage.py ensure_superuser && gunicorn seedvest.wsgi:application --bind 0.0.0.0:$PORT --workers $WEB_CONCURRENCY
+    healthCheckPath: /api/health/
+    autoDeployTrigger: commit
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: seedvest-db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DEBUG
+        value: "False"
+      - key: BACKEND_URL
+        value: https://seedvest-api.onrender.com
+      - key: ALLOWED_HOSTS
+        value: seedvest-api.onrender.com
+      - key: CSRF_TRUSTED_ORIGINS
+        value: https://seedvest-api.onrender.com
+      - key: WEB_CONCURRENCY
+        value: "1"
+      - key: MPESA_CONSUMER_KEY
+        sync: false
+      - key: MPESA_CONSUMER_SECRET
+        sync: false
+      - key: MPESA_SHORTCODE
+        sync: false
+      - key: MPESA_PASSKEY
+        sync: false
+      - key: MPESA_CALLBACK_URL
+        value: https://seedvest-api.onrender.com/api/payments/mpesa/callback/
+      - key: EMAIL_PROVIDER
+        value: resend
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM_EMAIL
+        sync: false
+      - key: INITIAL_ADMIN_EMAIL
+        sync: false
+      - key: INITIAL_ADMIN_PASSWORD
+        sync: false
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: FIREBASE_CLIENT_EMAIL
+        sync: false
+      - key: FIREBASE_PRIVATE_KEY
+        sync: false
+      - key: FRONTEND_URL
+        value: seedvest://
+
+databases:
+  - name: seedvest-db
+    plan: free
+    region: frankfurt
