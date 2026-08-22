@@ -2,7 +2,8 @@ from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.contrib.auth import get_user_model
 from finance.models import Contribution, Penalty
-from .models import Notification
+from .constants import NotificationType
+from .service import NotificationService
 
 User = get_user_model()
 
@@ -24,25 +25,32 @@ def notify_penalty_assigned(sender, instance, created, **kwargs):
         if instance.contribution:
             link = f"/finance/contributions/{instance.contribution.id}"
 
-        Notification.objects.create(
+        NotificationService.send_after_commit(
             recipient=recipient,
             title="Penalty Applied",
             message=f"A penalty of {instance.amount} has been applied to your account.",
             category="SYSTEM",
+            notification_level="ERROR",
+            notification_type=NotificationType.PENALTY_ISSUED,
             link=link,
+            channels=("in_app", "push", "email"),
         )
 
 
 from groups.models import Membership
+
+
+@receiver(post_save, sender=Membership)
 def notify_membership_added(sender, instance, created, **kwargs):
     if created:
-        Notification.objects.create(
+        NotificationService.send_after_commit(
             recipient=instance.user,
             title="Group Membership",
             message=f"You have been added to the group '{instance.group.name}' as {instance.get_role_display()}.",
             category="SYSTEM",
-            type="INFO",
+            notification_type=NotificationType.MEMBERSHIP_ADDED,
             link=f"/groups/{instance.group.id}",
+            channels=("in_app", "push"),
         )
 
 
@@ -82,8 +90,8 @@ def notify_manual_contribution_proposed(sender, instance, created, **kwargs):
         f"{instance.user.first_name} {instance.user.last_name}".strip()
         or instance.user.email
     )
-    notifications = [
-        Notification(
+    for recipient in recipients:
+        NotificationService.send_after_commit(
             recipient=recipient,
             title=title,
             message=(
@@ -91,9 +99,7 @@ def notify_manual_contribution_proposed(sender, instance, created, **kwargs):
                 f"{instance.group.name}. Verify in contribution management."
             ),
             category="PROPOSAL",
-            type="INFO",
+            notification_type=NotificationType.CONTRIBUTION_PROPOSAL,
             link="/governance/contributions",
+            channels=("in_app", "push"),
         )
-        for recipient in recipients
-    ]
-    Notification.objects.bulk_create(notifications)

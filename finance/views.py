@@ -30,7 +30,8 @@ from rest_framework.generics import ListAPIView
 from django.utils import timezone
 from django.http import HttpResponse
 from accounts.models import AuditLog, User
-from notifications.models import Notification
+from notifications.constants import NotificationType
+from notifications.service import NotificationService
 
 from accounts.permissions import IsApprovedUser
 from finance.permissions import (
@@ -342,7 +343,7 @@ class ContributionViewSet(viewsets.ModelViewSet):
                 membership__group=group
             ).distinct()
             for sec in secretaries:
-                Notification.objects.create(
+                NotificationService.send_after_commit(
                     recipient=sec,
                     title="Financial Record Archived",
                     message=(
@@ -351,6 +352,8 @@ class ContributionViewSet(viewsets.ModelViewSet):
                         f"Reason: {reason}"
                     ),
                     category="SYSTEM",
+                    notification_type=NotificationType.GENERAL,
+                    channels=("in_app", "push"),
                 )
 
         return Response({"status": "Contribution archived"}, status=status.HTTP_200_OK)
@@ -451,7 +454,7 @@ class PenaltyViewSet(viewsets.ModelViewSet):
                     membership__group=group
                 ).distinct()
                 for sec in secretaries:
-                    Notification.objects.create(
+                    NotificationService.send_after_commit(
                         recipient=sec,
                         title="Penalty Record Archived",
                         message=(
@@ -460,6 +463,8 @@ class PenaltyViewSet(viewsets.ModelViewSet):
                             f"Reason: {reason}"
                         ),
                         category="SYSTEM",
+                        notification_type=NotificationType.GENERAL,
+                        channels=("in_app", "push"),
                     )
 
         return Response({"status": "Penalty archived"}, status=status.HTTP_200_OK)
@@ -765,9 +770,6 @@ class InvestmentViewSet(viewsets.ModelViewSet):
         now = timezone.now()
 
         from accounts.models import AuditLog
-        from notifications.models import Notification
-        from accounts.emails import send_investment_status_email
-
         with transaction.atomic():
             previous_status = investment.status
             investment.status = "APPROVED"
@@ -802,19 +804,22 @@ class InvestmentViewSet(viewsets.ModelViewSet):
             )
 
             if investment.created_by:
-                Notification.objects.create(
+                NotificationService.send_after_commit(
                     recipient=investment.created_by,
                     title="Investment Approved",
                     message=f"Your proposal '{investment.name}' has been approved.",
                     category="SYSTEM",
+                    notification_type=NotificationType.INVESTMENT_UPDATE,
                     link=f"/governance/proposals/{investment.id}",
-                )
-                send_investment_status_email(
-                    user=investment.created_by,
-                    investment_name=investment.name,
-                    amount=investment.amount_invested,
-                    status="APPROVED",
-                    admin_notes=notes,
+                    channels=("in_app", "push", "email"),
+                    email_subject="Investment Proposal Update: APPROVED",
+                    email_message=(
+                        f"Dear {investment.created_by.first_name or 'Member'},\n\n"
+                        f"Your investment proposal '{investment.name}' has been approved.\n\n"
+                        f"Amount: KSh {investment.amount_invested:,.2f}\n"
+                        f"Admin Notes: {notes or 'N/A'}\n\n"
+                        "Please log in to SeedVest to view the complete details."
+                    ),
                 )
 
         return Response(InvestmentProposalDetailSerializer(investment, context={"request": request}).data)
@@ -843,9 +848,6 @@ class InvestmentViewSet(viewsets.ModelViewSet):
         now = timezone.now()
 
         from accounts.models import AuditLog
-        from notifications.models import Notification
-        from accounts.emails import send_investment_status_email
-
         with transaction.atomic():
             previous_status = investment.status
             investment.status = "REJECTED"
@@ -880,19 +882,25 @@ class InvestmentViewSet(viewsets.ModelViewSet):
             )
 
             if investment.created_by:
-                Notification.objects.create(
+                NotificationService.send_after_commit(
                     recipient=investment.created_by,
                     title="Investment Rejected",
-                    message=f"Your proposal '{investment.name}' was rejected. See reason in details.",
+                    message=(
+                        f"Your proposal '{investment.name}' was rejected. "
+                        "See the reason in details."
+                    ),
                     category="SYSTEM",
+                    notification_type=NotificationType.INVESTMENT_UPDATE,
                     link=f"/governance/proposals/{investment.id}",
-                )
-                send_investment_status_email(
-                    user=investment.created_by,
-                    investment_name=investment.name,
-                    amount=investment.amount_invested,
-                    status="REJECTED",
-                    admin_notes=notes,
+                    channels=("in_app", "push", "email"),
+                    email_subject="Investment Proposal Update: REJECTED",
+                    email_message=(
+                        f"Dear {investment.created_by.first_name or 'Member'},\n\n"
+                        f"Your investment proposal '{investment.name}' was rejected.\n\n"
+                        f"Amount: KSh {investment.amount_invested:,.2f}\n"
+                        f"Admin Notes: {notes}\n\n"
+                        "Please log in to SeedVest to view the complete details."
+                    ),
                 )
 
         return Response(InvestmentProposalDetailSerializer(investment, context={"request": request}).data)

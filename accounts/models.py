@@ -57,7 +57,7 @@ class User(AbstractUser):
 
     objects = UserManager()  # ✅ THIS IS THE KEY LINE
 
-    def approve_member(self, actor=None):
+    def approve_member(self, actor=None, notify=True):
         if self.application_status != "APPROVED":
             if not self.membership_number:
                 self.membership_number = self.generate_membership_number()
@@ -66,20 +66,34 @@ class User(AbstractUser):
             self.application_status = "APPROVED"
             self.save()
 
-            from notifications.models import Notification
-            from .emails import send_membership_approved_email
+            if not notify:
+                return True
 
-            Notification.objects.create(
+            from notifications.constants import NotificationType
+            from notifications.service import NotificationService
+
+            results = NotificationService.send(
                 recipient=self,
-                title="Membership Approved",
-                message=f"Congratulations! Your account has been approved. Your Membership Number is {self.membership_number}. You can log in using the password you created during registration.",
-                type="SUCCESS",
+                title="Account Approved",
+                message=(
+                    "Your SeedVest account has been approved. You can now complete "
+                    "your account setup and log in."
+                ),
+                notification_type=NotificationType.ACCOUNT_APPROVED,
+                notification_level="SUCCESS",
                 link="/dashboard",
+                channels=("in_app", "push", "email"),
+                email_subject="Membership Approved - SeedVest",
+                email_message=(
+                    f"Dear {self.first_name or 'Member'},\n\n"
+                    "Your SeedVest membership application has been approved.\n\n"
+                    f"Membership number: {self.membership_number}\n\n"
+                    "You can log in through the SeedVest mobile app using the password "
+                    "you created during registration."
+                ),
+                bypass_preferences=True,
             )
-
-            # Return the delivery result so the approving administrator is not
-            # told an email was sent when SMTP delivery failed.
-            return send_membership_approved_email(self) if self.email else False
+            return bool(results.get("email"))
 
         return False
 

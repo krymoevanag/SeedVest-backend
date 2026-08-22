@@ -223,10 +223,19 @@ AUTH_USER_MODEL = "accounts.User"
 
 
 # =========================
-# Email (safe dev mode)
+# Email delivery
 # =========================
 
-EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+EMAIL_PROVIDER = os.getenv("EMAIL_PROVIDER", "smtp").strip().lower()
+
+RESEND_API_KEY = os.getenv("RESEND_API_KEY")
+RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL")
+
+if EMAIL_PROVIDER == "resend":
+    EMAIL_BACKEND = "anymail.backends.resend.EmailBackend"
+    ANYMAIL = {"RESEND_API_KEY": RESEND_API_KEY}
+else:
+    EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 
 EMAIL_HOST = os.getenv("EMAIL_HOST")
 EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
@@ -236,14 +245,24 @@ EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER")
 EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD")
 EMAIL_TIMEOUT = int(os.getenv("EMAIL_TIMEOUT", "10"))
 
-# When DEFAULT_FROM_EMAIL is not set, use the authenticated SMTP mailbox.  A
-# mismatched From address can cause Gmail and other providers to quarantine or
-# reject otherwise valid messages.
-DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL") or (
-    f"SeedVest <{EMAIL_HOST_USER}>"
-    if EMAIL_HOST_USER
-    else "SeedVest <seedvest.app@gmail.com>"
+# When DEFAULT_FROM_EMAIL is not set, use the configured provider sender. A
+# Resend sender must be explicit so Render never falls back to SMTP.
+DEFAULT_FROM_EMAIL = (
+    RESEND_FROM_EMAIL
+    if EMAIL_PROVIDER == "resend"
+    else os.getenv("DEFAULT_FROM_EMAIL")
+    or (
+        f"SeedVest <{EMAIL_HOST_USER}>"
+        if EMAIL_HOST_USER
+        else "SeedVest <seedvest.app@gmail.com>"
+    )
 )
+
+# Firebase Cloud Messaging service-account values are intentionally loaded from
+# environment variables only. The private key is normalized in notifications.firebase.
+FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID")
+FIREBASE_CLIENT_EMAIL = os.getenv("FIREBASE_CLIENT_EMAIL")
+FIREBASE_PRIVATE_KEY = os.getenv("FIREBASE_PRIVATE_KEY")
 
 AUTHENTICATION_BACKENDS = [
     "accounts.auth_backends.EmailBackend",

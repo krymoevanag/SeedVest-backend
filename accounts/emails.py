@@ -18,14 +18,18 @@ def _send_email(subject, message, from_email, recipient_list, html_message=None)
         logger.warning("Email was not sent because it has no recipient")
         return False
 
+    if settings.EMAIL_PROVIDER == "resend":
+        required_settings = ("RESEND_API_KEY", "RESEND_FROM_EMAIL")
+    else:
+        required_settings = ("EMAIL_HOST", "EMAIL_HOST_USER", "EMAIL_HOST_PASSWORD")
+
     missing_settings = [
-        name
-        for name in ("EMAIL_HOST", "EMAIL_HOST_USER", "EMAIL_HOST_PASSWORD")
-        if not getattr(settings, name, None)
+        name for name in required_settings if not getattr(settings, name, None)
     ]
     if missing_settings:
         logger.error(
-            "Email was not sent because SMTP is not configured: missing %s",
+            "Email was not sent because %s is not configured: missing %s",
+            settings.EMAIL_PROVIDER,
             ", ".join(missing_settings),
         )
         return False

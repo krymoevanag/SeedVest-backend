@@ -1,10 +1,14 @@
 from django.urls import reverse
+from unittest.mock import patch
+
 from rest_framework.test import APITestCase
 from rest_framework import status
 from django.contrib.auth import get_user_model
 from finance.models import Contribution, Penalty
 from groups.models import Group, Membership
-from .models import Notification
+from .constants import NotificationType
+from .models import Notification, UserDevice
+from .service import NotificationService
 from decimal import Decimal
 from datetime import date
 
@@ -87,6 +91,150 @@ class NotificationTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertFalse(Notification.objects.filter(is_read=False).exists())
 
+    def test_unread_count_only_includes_current_users_unread_notifications(self):
+        other_user = User.objects.create_user(
+            email="other@seedvest.com",
+            password="pass123",
+            is_active=True,
+            is_approved=True,
+        )
+        Notification.objects.create(recipient=self.user, title="Unread", message="1")
+        Notification.objects.create(
+            recipient=self.user,
+            title="Read",
+            message="2",
+            is_read=True,
+        )
+        Notification.objects.create(recipient=other_user, title="Other", message="3")
+
+        response = self.client.get(reverse("notification-unread-count"))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, {"count": self.initial_count + 1})
+
+    def test_authenticated_user_registers_only_their_device(self):
+        other_user = User.objects.create_user(
+            email="device-other@seedvest.com",
+            password="pass123",
+            is_active=True,
+            is_approved=True,
+        )
+
+        response = self.client.post(
+            reverse("notification-devices"),
+            {
+                "device_token": "test-device-token",
+                "platform": "ANDROID",
+                "user_id": other_user.id,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        device = UserDevice.objects.get(device_token="test-device-token")
+        self.assertEqual(device.user, self.user)
+
+    def test_registering_an_existing_token_reactivates_it(self):
+        device = UserDevice.objects.create(
+            user=self.user,
+            device_token="inactive-device-token",
+            platform="ANDROID",
+            is_active=False,
+        )
+
+        response = self.client.post(
+            reverse("notification-devices"),
+            {"device_token": device.device_token, "platform": "IOS"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        device.refresh_from_db()
+        self.assertTrue(device.is_active)
+        self.assertEqual(device.platform, "IOS")
+
+
+class NotificationServiceTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="service@seedvest.com",
+            password="pass123",
+            is_active=True,
+            is_approved=True,
+        )
+
+    def test_in_app_channel_creates_notification(self):
+        results = NotificationService.send(
+            recipient=self.user,
+            title="Account Approved",
+            message="Your account is ready.",
+            notification_type=NotificationType.ACCOUNT_APPROVED,
+            channels=("in_app",),
+        )
+
+        self.assertTrue(results["in_app"])
+        self.assertTrue(
+            Notification.objects.filter(
+                recipient=self.user,
+                notification_type=NotificationType.ACCOUNT_APPROVED,
+            ).exists()
+        )
+
+    def test_email_channel_is_invoked_when_configured(self):
+        with patch(
+            "notifications.service.EmailChannel.is_configured", return_value=True
+        ), patch("notifications.service.EmailChannel.send", return_value=True) as send:
+            results = NotificationService.send(
+                recipient=self.user,
+                title="Email subject",
+                message="Email body",
+                channels=("email",),
+            )
+
+        self.assertTrue(results["email"])
+        send.assert_called_once()
+
+    def test_email_channel_is_skipped_when_unavailable(self):
+        with patch(
+            "notifications.service.EmailChannel.is_configured", return_value=False
+        ), patch("notifications.service.EmailChannel.send") as send:
+            results = NotificationService.send(
+                recipient=self.user,
+                title="Email subject",
+                message="Email body",
+                channels=("email",),
+            )
+
+        self.assertFalse(results["email"])
+        send.assert_not_called()
+
+    def test_push_channel_is_skipped_when_unavailable(self):
+        with patch(
+            "notifications.service.PushChannel.is_configured", return_value=False
+        ), patch("notifications.service.PushChannel.send") as send:
+            results = NotificationService.send(
+                recipient=self.user,
+                title="Push title",
+                message="Push body",
+                channels=("push",),
+            )
+
+        self.assertFalse(results["push"])
+        send.assert_not_called()
+
+    def test_channel_failure_does_not_propagate(self):
+        with patch(
+            "notifications.service.InAppChannel.send", side_effect=RuntimeError("boom")
+        ):
+            results = NotificationService.send(
+                recipient=self.user,
+                title="Failure isolation",
+                message="Notification delivery failed.",
+                channels=("in_app",),
+            )
+
+        self.assertFalse(results["in_app"])
+
 
 class NotificationTriggerTests(APITestCase):
     def setUp(self):
@@ -105,15 +253,15 @@ class NotificationTriggerTests(APITestCase):
         self.assertTrue(
             Notification.objects.filter(
                 recipient=self.user,
-                title="Membership Approved",
+                title="Account Approved",
             ).exists()
         )
         notif = Notification.objects.get(
             recipient=self.user,
-            title="Membership Approved",
+            title="Account Approved",
         )
-        self.assertEqual(notif.title, "Membership Approved")
-        self.assertIn("membership number", notif.message)
+        self.assertEqual(notif.title, "Account Approved")
+        self.assertNotIn("password", notif.message.lower())
 
     def test_penalty_notification_trigger(self):
         # Setup for penalty
@@ -129,12 +277,13 @@ class NotificationTriggerTests(APITestCase):
         )
 
         # Create penalty
-        Penalty.objects.create(
-            contribution=contribution,
-            amount=Decimal("10.00"),
-            reason="Late payment",
-            applied_by=self.user,
-        )
+        with self.captureOnCommitCallbacks(execute=True):
+            Penalty.objects.create(
+                contribution=contribution,
+                amount=Decimal("10.00"),
+                reason="Late payment",
+                applied_by=self.user,
+            )
 
         # Check notification
         self.assertTrue(Notification.objects.filter(recipient=self.user, title="Penalty Applied").exists())
@@ -143,7 +292,8 @@ class NotificationTriggerTests(APITestCase):
         from groups.models import Membership, Group
         group = Group.objects.create(name="Signal Group", treasurer=self.user)
         
-        Membership.objects.create(user=self.user, group=group, role="MEMBER")
+        with self.captureOnCommitCallbacks(execute=True):
+            Membership.objects.create(user=self.user, group=group, role="MEMBER")
         
         self.assertTrue(Notification.objects.filter(recipient=self.user, title="Group Membership").exists())
 
@@ -232,14 +382,15 @@ class NotificationPreferencesAndProposalTests(APITestCase):
         )
 
     def test_manual_contribution_proposal_creates_admin_notification(self):
-        Contribution.objects.create(
-            user=self.member,
-            group=self.group,
-            amount=Decimal("1500.00"),
-            due_date=date.today(),
-            is_manual_entry=True,
-            status="PENDING",
-        )
+        with self.captureOnCommitCallbacks(execute=True):
+            Contribution.objects.create(
+                user=self.member,
+                group=self.group,
+                amount=Decimal("1500.00"),
+                due_date=date.today(),
+                is_manual_entry=True,
+                status="PENDING",
+            )
 
         self.assertTrue(
             Notification.objects.filter(

@@ -1,4 +1,5 @@
 from django.urls import reverse
+from notifications.models import Notification
 from unittest.mock import patch
 from rest_framework.test import APITestCase
 from rest_framework import status
@@ -201,8 +202,9 @@ class ApprovalTests(APITestCase):
         refresh = RefreshToken.for_user(self.admin)
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
 
-    @patch("accounts.emails.send_membership_approved_email", return_value=True)
-    def test_admin_can_approve_user(self, mock_send):
+    @patch("notifications.service.EmailChannel.is_configured", return_value=True)
+    @patch("notifications.service.EmailChannel.send", return_value=True)
+    def test_admin_can_approve_user(self, mock_send, _mock_configured):
         url = reverse("user-approve", args=[self.pending_user.id])
         response = self.client.post(url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -212,19 +214,30 @@ class ApprovalTests(APITestCase):
         self.assertTrue(self.pending_user.is_active)
         self.assertIsNotNone(self.pending_user.membership_number)
         self.assertTrue(response.data["email_sent"])
-        mock_send.assert_called_once_with(self.pending_user)
+        self.assertEqual(
+            Notification.objects.filter(
+                recipient=self.pending_user,
+                notification_type="ACCOUNT_APPROVED",
+            ).count(),
+            1,
+        )
+        mock_send.assert_called_once()
 
-    @patch("accounts.emails.send_membership_approved_email", return_value=False)
-    def test_approval_reports_email_delivery_failure(self, mock_send):
+    @patch("notifications.service.EmailChannel.is_configured", return_value=True)
+    @patch("notifications.service.EmailChannel.send", return_value=False)
+    def test_approval_reports_email_delivery_failure(self, mock_send, _mock_configured):
         response = self.client.post(reverse("user-approve", args=[self.pending_user.id]))
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertFalse(response.data["email_sent"])
         self.assertIn("could not be delivered", response.data["message"])
-        mock_send.assert_called_once_with(self.pending_user)
+        mock_send.assert_called_once()
 
-    @patch("accounts.emails.send_membership_approved_email", return_value=True)
-    def test_self_registered_user_can_login_with_own_password_after_approval(self, _mock_send):
+    @patch("notifications.service.EmailChannel.is_configured", return_value=True)
+    @patch("notifications.service.EmailChannel.send", return_value=True)
+    def test_self_registered_user_can_login_with_own_password_after_approval(
+        self, _mock_send, _mock_configured
+    ):
         self_registered_user = User.objects.create_user(
             email="selfreg@test.com",
             password="MySelfPassword123!",

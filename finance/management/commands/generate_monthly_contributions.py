@@ -14,7 +14,8 @@ from django.db import transaction
 from django.utils import timezone
 
 from finance.models import AutoSavingConfig, Contribution, MonthlySavingGeneration
-from notifications.models import Notification
+from notifications.constants import NotificationType
+from notifications.service import NotificationService
 
 
 class Command(BaseCommand):
@@ -101,15 +102,17 @@ class Command(BaseCommand):
                     generated_for_month=target_date,
                 )
 
-                Notification.objects.create(
+                NotificationService.send_after_commit(
                     recipient=config.user,
-                    type="SUCCESS",
+                    notification_level="SUCCESS",
+                    notification_type=NotificationType.CONTRIBUTION_REMINDER,
                     title="Monthly Auto-Save Scheduled",
                     message=(
                         f"Your monthly auto-save of KSh {config.amount:,.2f} has been "
                         f"scheduled for {config.group.name}. Due by "
                         f"{due_date.strftime('%B %d, %Y')}."
                     ),
+                    channels=("in_app", "push"),
                 )
 
                 self.stdout.write(

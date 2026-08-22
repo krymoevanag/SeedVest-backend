@@ -40,6 +40,12 @@ services:
         value: https://seedvest-api.onrender.com/api/payments/mpesa/callback/
       - key: EMAIL_HOST
         sync: false
+      - key: EMAIL_PROVIDER
+        value: resend
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM_EMAIL
+        sync: false
       - key: EMAIL_PORT
         value: "587"
       - key: EMAIL_USE_TLS
@@ -51,6 +57,12 @@ services:
       - key: EMAIL_HOST_PASSWORD
         sync: false
       - key: DEFAULT_FROM_EMAIL
+        sync: false
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: FIREBASE_CLIENT_EMAIL
+        sync: false
+      - key: FIREBASE_PRIVATE_KEY
         sync: false
       - key: FRONTEND_URL
         value: seedvest://

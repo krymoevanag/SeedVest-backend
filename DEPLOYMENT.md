@@ -141,23 +141,36 @@ Use the actual URL shown in the Render dashboard if it differs.
 | `MPESA_SHORTCODE` | The matching sandbox or production shortcode. |
 | `MPESA_PASSKEY` | The matching sandbox or production passkey. |
 | `MPESA_CALLBACK_URL` | `https://YOUR-RENDER-URL/api/payments/mpesa/callback/` |
-| `EMAIL_HOST` | Your SMTP host, for example `smtp.gmail.com`. |
-| `EMAIL_PORT` | Already set to `587`. |
-| `EMAIL_USE_TLS` | Already set to `True`. |
-| `EMAIL_HOST_USER` | SeedVest sender mailbox address. |
-| `EMAIL_HOST_PASSWORD` | A newly generated SMTP/Gmail app password. |
-| `DEFAULT_FROM_EMAIL` | Example: `SeedVest <sender@example.com>`. |
+| `EMAIL_PROVIDER` | Already set to `resend`. Do not change it to SMTP on Render. |
+| `RESEND_API_KEY` | A Resend API key. |
+| `RESEND_FROM_EMAIL` | A sender address verified by Resend. |
+| `FIREBASE_PROJECT_ID` | Firebase project identifier from the service account. |
+| `FIREBASE_CLIENT_EMAIL` | Firebase service-account client email. |
+| `FIREBASE_PRIVATE_KEY` | Firebase service-account private key, entered as one Render secret. |
 | `FRONTEND_URL` | Keep `seedvest://` for Flutter password-reset deep links. |
 
-`EMAIL_HOST_USER` must be the same mailbox used by `DEFAULT_FROM_EMAIL` (or
-the address inside its angle brackets). For Gmail, `EMAIL_HOST_PASSWORD` must
-be a 16-character **App Password**, not the mailbox's normal password. These
-three secret values are marked `sync: false` and therefore must be entered in
-the Render dashboard; they are not populated from this repository.
+`RESEND_API_KEY`, `RESEND_FROM_EMAIL`, and each Firebase value are marked
+`sync: false`; enter them only in the Render dashboard. Do not enable an SMTP
+fallback on Render. The existing SMTP variables remain in the Blueprint for
+local-development compatibility but are ignored while `EMAIL_PROVIDER=resend`.
 
 After saving the variables, redeploy the service. A registration, approval, or
-admin invite now reports `email_sent: false` when SMTP fails. In that case,
-open Render Logs and search for `Email delivery` or `SMTP is not configured`.
+admin invite now reports `email_sent: false` when email delivery is unavailable.
+The business operation still succeeds; inspect Render Logs for `Email delivery`
+or `not configured`.
+
+### Firebase mobile setup
+
+Create a Firebase project, register the Android package
+`com.example.seedvest_mobile`, then download the real configuration file to:
+
+```text
+seedvest_mobile/android/app/google-services.json
+```
+
+The file is intentionally gitignored and is not included in this repository.
+No Firebase Authentication, Firestore, Storage, or Realtime Database setup is
+required for SeedVest push notifications.
 
 Do not add the local-only `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, or
 `DB_PORT` settings to Render. `DATABASE_URL` replaces them in production.

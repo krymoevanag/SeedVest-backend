@@ -15,7 +15,7 @@ SeedVest is a micro-investment and savings management platform. This backend pro
 - Framework: Django, Django REST Framework
 - Database: PostgreSQL (configured via `.env`)
 - Authentication: SimpleJWT (with token blacklisting)
-- Notifications: Django Mail and in-app notifications
+- Notifications: in-app records, Firebase Cloud Messaging, and Django email delivery
 
 ## Getting Started
 
@@ -46,11 +46,20 @@ SeedVest is a micro-investment and savings management platform. This backend pro
    MPESA_PASSKEY=your-passkey
    MPESA_CALLBACK_URL=https://your-domain/api/payments/mpesa/callback/
 
+   EMAIL_PROVIDER=smtp
    EMAIL_HOST=smtp.gmail.com
    EMAIL_PORT=587
    EMAIL_USE_TLS=True
    EMAIL_HOST_USER=your-email@example.com
    EMAIL_HOST_PASSWORD=your-email-app-password
+   DEFAULT_FROM_EMAIL=SeedVest <your-email@example.com>
+
+   RESEND_API_KEY=
+   RESEND_FROM_EMAIL=
+
+   FIREBASE_PROJECT_ID=
+   FIREBASE_CLIENT_EMAIL=
+   FIREBASE_PRIVATE_KEY=
 
    FRONTEND_URL=seedvest://
    ```
@@ -98,3 +107,4 @@ python manage.py test <app_name>
 - Refresh tokens are rotated and can be blacklisted on logout.
 - Role-based permissions are enforced across governance and finance endpoints.
 - Password reset endpoints avoid leaking account existence to clients.
+- Notification delivery failures are logged and never reverse successful account or financial operations.

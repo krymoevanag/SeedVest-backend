@@ -1,8 +1,13 @@
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from .models import Notification, NotificationPreference
-from .serializers import NotificationSerializer, NotificationPreferenceSerializer
+from .models import Notification, NotificationPreference, UserDevice
+from .serializers import (
+    NotificationSerializer,
+    NotificationPreferenceSerializer,
+    UserDeviceRegistrationSerializer,
+    UserDeviceSerializer,
+)
 from django.contrib.auth import get_user_model
 from accounts.permissions import IsAdminOrTreasurer
 
@@ -42,6 +47,38 @@ class NotificationViewSet(viewsets.ModelViewSet):
         self.get_queryset().update(is_read=True)
         return Response(
             {"status": "all notifications marked as read"}, status=status.HTTP_200_OK
+        )
+
+    @action(detail=False, methods=["get"], url_path="unread-count")
+    def unread_count(self, request):
+        count = Notification.objects.filter(
+            recipient=request.user,
+            is_read=False,
+        ).count()
+        return Response({"count": count}, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["post"], url_path="devices")
+    def devices(self, request):
+        serializer = UserDeviceRegistrationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        device, created = UserDevice.objects.get_or_create(
+            device_token=serializer.validated_data["device_token"],
+            defaults={
+                "user": request.user,
+                "platform": serializer.validated_data["platform"],
+                "is_active": True,
+            },
+        )
+        if not created:
+            device.user = request.user
+            device.platform = serializer.validated_data["platform"]
+            device.is_active = True
+            device.save(update_fields=["user", "platform", "is_active", "updated_at"])
+
+        return Response(
+            UserDeviceSerializer(device).data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
 
     @action(detail=False, methods=["get", "patch"])

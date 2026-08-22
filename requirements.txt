@@ -16,3 +16,5 @@ tzdata==2025.3
 urllib3==2.6.3
 gunicorn==23.0.0
 whitenoise==6.8.2
+django-anymail[resend]==15.1
+firebase-admin==7.5.0

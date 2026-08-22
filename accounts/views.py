@@ -38,12 +38,7 @@ from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
 # LOCAL IMPORTS
 # ====================================================
 from finance.models import Contribution, Penalty
-from .emails import (
-    send_admin_account_setup_email,
-    send_membership_rejected_email,
-    send_password_reset_email,
-    send_role_updated_email,
-)
+from .emails import send_admin_account_setup_email, send_password_reset_email
 from .permissions import IsAdminOrTreasurer, IsApprovedUser
 from .serializers import (
     RegisterSerializer,
@@ -230,16 +225,18 @@ class ActivateAccountView(APIView):
         user.application_status = "UNDER_REVIEW"
         user.save(update_fields=["is_active", "application_status"])
 
-        # Notify Admins/Treasurers
-        from notifications.models import Notification
+        from notifications.constants import NotificationType
+        from notifications.service import NotificationService
+
         admins = User.objects.filter(role__in=["ADMIN", "TREASURER"])
         for admin in admins:
-            Notification.objects.create(
+            NotificationService.send(
                 recipient=admin,
                 title="New Membership Application",
                 message=f"{user.first_name} {user.last_name} has activated their account and is ready for review.",
-                type="INFO",
+                notification_type=NotificationType.ACCOUNT_ACTIVATION,
                 link="/governance/approvals",
+                channels=("in_app", "push"),
             )
 
         return Response(
@@ -406,16 +403,38 @@ class UserViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        email_sent = bool(user.approve_member(actor=request.user))
+        from notifications.constants import NotificationType
+        from notifications.service import NotificationService
 
-        # Log action
-        from .models import AuditLog
+        user.approve_member(actor=request.user, notify=False)
         AuditLog.objects.create(
             actor=request.user,
             target_user=user,
             action="APPROVAL",
-            notes=f"Member approved with ID: {user.membership_number}"
+            notes=f"Member approved with ID: {user.membership_number}",
         )
+        delivery_results = NotificationService.send(
+            recipient=user,
+            title="Account Approved",
+            message=(
+                "Your SeedVest account has been approved. You can now complete your "
+                "account setup and log in."
+            ),
+            notification_type=NotificationType.ACCOUNT_APPROVED,
+            notification_level="SUCCESS",
+            link="/dashboard",
+            channels=("in_app", "push", "email"),
+            email_subject="Membership Approved - SeedVest",
+            email_message=(
+                f"Dear {user.first_name or 'Member'},\n\n"
+                "Your SeedVest membership application has been approved.\n\n"
+                f"Membership number: {user.membership_number}\n\n"
+                "You can log in through the SeedVest mobile app using the password "
+                "you created during registration."
+            ),
+            bypass_preferences=True,
+        )
+        email_sent = bool(delivery_results.get("email"))
 
         response_data = {
             "message": f"Member {user.first_name} {user.last_name} approved successfully.",
@@ -447,16 +466,38 @@ class UserViewSet(viewsets.ModelViewSet):
             "reason", "Application does not meet current criteria."
         )
 
+        from notifications.constants import NotificationType
+        from notifications.service import NotificationService
+
         user.application_status = "REJECTED"
         user.is_active = False
         user.save(update_fields=["application_status", "is_active"])
-
-        # Send Email
-        from .emails import send_membership_rejected_email
-        send_membership_rejected_email(user, reason)
+        delivery_results = NotificationService.send(
+            recipient=user,
+            title="Account Review Update",
+            message=(
+                "Your SeedVest membership application was not approved. "
+                f"Reason: {reason}"
+            ),
+            notification_type=NotificationType.ACCOUNT_REJECTED,
+            notification_level="WARNING",
+            link="/login",
+            channels=("in_app", "push", "email"),
+            email_subject="Membership Application Update - SeedVest",
+            email_message=(
+                f"Dear {user.first_name or 'Member'},\n\n"
+                "Your SeedVest membership application was not approved.\n\n"
+                f"Reason:\n{reason}\n\n"
+                "Please contact the administration if you have questions."
+            ),
+            bypass_preferences=True,
+        )
 
         return Response(
-            {"message": "User rejected and email sent."},
+            {
+                "message": "User rejected successfully.",
+                "email_sent": bool(delivery_results.get("email")),
+            },
             status=status.HTTP_200_OK,
         )
 
@@ -492,7 +533,25 @@ class UserViewSet(viewsets.ModelViewSet):
             notes=f"Role changed from {old_role} to {new_role}"
         )
 
-        send_role_updated_email(user, new_role)
+        from notifications.constants import NotificationType
+        from notifications.service import NotificationService
+
+        NotificationService.send(
+            recipient=user,
+            title="Role Updated",
+            message=f"Your SeedVest role has been updated to {new_role}.",
+            notification_type=NotificationType.SECURITY_ALERT,
+            link="/profile",
+            channels=("in_app", "push", "email"),
+            email_subject="Role Updated - SeedVest",
+            email_message=(
+                f"Dear {user.first_name or 'Member'},\n\n"
+                f"Your SeedVest role has been updated to {new_role}.\n\n"
+                "This change is effective immediately. You may need to log out and "
+                "log back in to see new permissions."
+            ),
+            bypass_preferences=True,
+        )
 
         return Response(
             {"message": f"Role for {user.email} updated to {new_role}.", "role": new_role},
@@ -693,18 +752,21 @@ class PasswordResetRequestView(APIView):
 
         # If user has no email address:
         if not user.email:
-            # Notify admins/treasurers so they can reset password for this member
-            from notifications.models import Notification
+            from notifications.constants import NotificationType
+            from notifications.service import NotificationService
+
             admins = User.objects.filter(role__in=["ADMIN", "TREASURER"], is_active=True)
             member_name = f"{user.first_name} {user.last_name}".strip() or user.membership_number or "Member"
             for admin in admins:
-                Notification.objects.create(
+                NotificationService.send(
                     recipient=admin,
                     title="Password Reset Request (No Email)",
                     message=f"{member_name} (ID: {user.membership_number or user.id}, Phone: {user.phone_number or 'N/A'}) requested a password reset but has no registered email.",
                     category="SYSTEM",
-                    type="WARNING",
+                    notification_level="WARNING",
+                    notification_type=NotificationType.SECURITY_ALERT,
                     link="/governance/members",
+                    channels=("in_app", "push"),
                 )
 
             return Response(

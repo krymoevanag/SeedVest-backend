@@ -4,9 +4,7 @@ from django.utils import timezone
 from datetime import date
 import calendar
 from .models import Contribution, Penalty, AutoSavingConfig, MonthlySavingGeneration
-from notifications.models import Notification
 from groups.models import Membership, Group
-from accounts.emails import send_penalty_notification_email
 from .cycle_services import FinancialCycleService
 
 class InsightService:
@@ -245,21 +243,6 @@ class AutoSaveService:
                                         reason=reason,
                                     )
                                     
-                                    # Send email
-                                    send_penalty_notification_email(
-                                        user, 
-                                        group.penalty_amount, 
-                                        group.name, 
-                                        reason
-                                    )
-                                    
-                                    # Also create in-app notification
-                                    Notification.objects.create(
-                                        recipient=user,
-                                        type="ERROR",
-                                        title=f"Penalty Issued - {group.name}",
-                                        message=reason
-                                    )
                                     penalty_count += 1
                             except Exception as e:
                                 errors.append(f"Penalty error {user.email}: {e}")
