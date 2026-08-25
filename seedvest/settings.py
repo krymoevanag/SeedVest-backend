@@ -3,7 +3,7 @@ from datetime import timedelta
 import os
 
 import dj_database_url
-from dotenv import load_dotenv
+from dotenv import load_dotenv  # noqa: F401
 # =========================
 # Base directory & ENV load
 # =========================
