@@ -2435,7 +2435,48 @@ class LoanViewSet(viewsets.ModelViewSet):
             message=f"Your loan of KES {loan.amount:,.2f} has been approved.",
             category="SYSTEM",
             notification_level="SUCCESS",
-            notification_type=NotificationType.GENERAL,
+            notification_type=NotificationType.LOAN_APPROVED,
+            link=f"/loans/{loan.id}",
+            channels=("in_app", "push"),
+        )
+        return Response(self._serialize_loan(loan.id))
+
+    @action(detail=True, methods=["post"], url_path="reject", url_name="reject")
+    def reject_loan(self, request, pk=None):
+        loan = self.get_object()
+        if not self._is_loan_manager(request.user, loan):
+            return Response(
+                {"detail": "Only the group treasurer or an admin can reject this loan."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if loan.status not in ("PENDING_GUARANTORS", "PENDING_APPROVAL"):
+            return Response(
+                {"detail": "Only pending loans can be rejected."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        reason = str(request.data.get("reason", "")).strip()
+        if not reason:
+            return Response(
+                {"reason": "A rejection reason is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        loan.status = "REJECTED"
+        loan.rejection_reason = reason
+        loan.save(update_fields=["status", "rejection_reason", "updated_at"])
+        AuditLog.objects.create(
+            actor=request.user,
+            target_user=loan.user,
+            action="LOAN_REJECTION",
+            notes=f"Loan #{loan.id} rejected. Reason: {reason}",
+        )
+        NotificationService.send_after_commit(
+            recipient=loan.user,
+            title="Loan rejected",
+            message=f"Your loan application was rejected. Reason: {reason}",
+            category="SYSTEM",
+            notification_level="WARNING",
+            notification_type=NotificationType.LOAN_REJECTED,
             link=f"/loans/{loan.id}",
             channels=("in_app", "push"),
         )
@@ -2468,7 +2509,7 @@ class LoanViewSet(viewsets.ModelViewSet):
             ),
             category="SYSTEM",
             notification_level="SUCCESS",
-            notification_type=NotificationType.GENERAL,
+            notification_type=NotificationType.LOAN_DISBURSED,
             link=f"/loans/{loan.id}",
             channels=("in_app", "push"),
         )
@@ -2550,7 +2591,7 @@ class LoanViewSet(viewsets.ModelViewSet):
             message=message,
             category="SYSTEM",
             notification_level=notification_level,
-            notification_type=NotificationType.GENERAL,
+            notification_type=NotificationType.LOAN_REPAYMENT_RECEIVED,
             link=f"/loans/{loan.id}",
             channels=("in_app", "push"),
         )
@@ -2582,7 +2623,58 @@ class LoanViewSet(viewsets.ModelViewSet):
             ),
             category="SYSTEM",
             notification_level="SUCCESS",
-            notification_type=NotificationType.GENERAL,
+            notification_type=NotificationType.LOAN_REPAYMENT_VERIFIED,
+            link=f"/loans/{loan.id}",
+            channels=("in_app", "push"),
+        )
+        return Response(self._serialize_loan(loan.id))
+
+    @action(detail=True, methods=["post"], url_path="reject-repayment")
+    def reject_repayment(self, request, pk=None):
+        loan = self.get_object()
+        if not self._is_loan_manager(request.user, loan):
+            return Response(
+                {"detail": "Only the group treasurer or an admin can reject repayments."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        repayment_id = request.data.get("repayment_id")
+        try:
+            repayment = LoanRepayment.objects.get(pk=repayment_id, loan=loan)
+        except LoanRepayment.DoesNotExist:
+            return Response(
+                {"repayment_id": ["Repayment not found."]},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        if repayment.status != "PENDING":
+            return Response(
+                {"detail": "Only pending repayments can be rejected."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        reason = str(request.data.get("reason", "")).strip()
+        if not reason:
+            return Response(
+                {"reason": "A rejection reason is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        repayment.status = "REJECTED"
+        repayment.notes = f"{repayment.notes}\nRejection reason: {reason}".strip()
+        repayment.verified_by = request.user
+        repayment.verified_at = timezone.now()
+        repayment.save(update_fields=["status", "notes", "verified_by", "verified_at"])
+        AuditLog.objects.create(
+            actor=request.user,
+            target_user=loan.user,
+            action="REPAYMENT_REJECT",
+            notes=f"Repayment #{repayment.id} for loan #{loan.id} rejected. Reason: {reason}",
+        )
+        NotificationService.send_after_commit(
+            recipient=loan.user,
+            title="Loan repayment rejected",
+            message=f"Your loan repayment was rejected. Reason: {reason}",
+            category="SYSTEM",
+            notification_level="WARNING",
+            notification_type=NotificationType.LOAN_REJECTED,
             link=f"/loans/{loan.id}",
             channels=("in_app", "push"),
         )

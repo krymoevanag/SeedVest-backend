@@ -11,7 +11,14 @@ from django.contrib.auth import get_user_model
 
 from groups.models import Group, Membership
 from .cycle_services import FinancialCycleService
-from .models import Contribution, Penalty, MonthlyContributionRecord, Loan, LoanGuarantor
+from .models import (
+    Contribution,
+    Penalty,
+    MonthlyContributionRecord,
+    Loan,
+    LoanGuarantor,
+    LoanRepayment,
+)
 
 User = get_user_model()
 
@@ -751,3 +758,59 @@ class LoanWorkflowTests(APITestCase):
         loan.refresh_from_db()
         self.assertEqual(loan.status, "DISBURSED")
         self.assertIsNotNone(loan.due_date)
+
+    def test_manager_can_reject_pending_loan_with_reason(self):
+        loan = Loan.objects.create(
+            user=self.member,
+            group=self.group,
+            amount=Decimal("4000.00"),
+            interest_rate=Decimal("5.00"),
+            duration_months=3,
+            status="PENDING_APPROVAL",
+        )
+        admin_refresh = RefreshToken.for_user(self.admin)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {admin_refresh.access_token}")
+
+        response = self.client.post(
+            reverse("loan-reject", args=[loan.id]),
+            {"reason": "Insufficient supporting information."},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        loan.refresh_from_db()
+        self.assertEqual(loan.status, "REJECTED")
+        self.assertEqual(loan.rejection_reason, "Insufficient supporting information.")
+
+    def test_manager_can_reject_pending_repayment_without_changing_balance(self):
+        loan = Loan.objects.create(
+            user=self.member,
+            group=self.group,
+            amount=Decimal("4000.00"),
+            interest_rate=Decimal("5.00"),
+            duration_months=3,
+            status="DISBURSED",
+        )
+        repayment = LoanRepayment.objects.create(
+            loan=loan,
+            user=self.member,
+            amount=Decimal("500.00"),
+        )
+        original_balance = loan.balance_remaining
+        admin_refresh = RefreshToken.for_user(self.admin)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {admin_refresh.access_token}")
+
+        response = self.client.post(
+            reverse("loan-reject-repayment", args=[loan.id]),
+            {
+                "repayment_id": repayment.id,
+                "reason": "Transaction reference could not be verified.",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        repayment.refresh_from_db()
+        loan.refresh_from_db()
+        self.assertEqual(repayment.status, "REJECTED")
+        self.assertEqual(loan.balance_remaining, original_balance)
