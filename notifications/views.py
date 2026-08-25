@@ -110,23 +110,58 @@ class NotificationViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        notifications = [
-            Notification(
+        from .service import NotificationService
+        from .constants import NotificationType
+
+        recipients = User.objects.filter(
+            is_active=True,
+            is_approved=True,
+            role__in=["MEMBER", "TREASURER", "FINANCIAL_SECRETARY"],
+        )
+
+        for user in recipients:
+            NotificationService.send(
                 recipient=user,
                 title=title,
                 message=message,
                 category="INTERNAL",
-                type=notif_type,
+                notification_level=notif_type,
+                notification_type=NotificationType.GENERAL,
+                link="/notifications",
+                channels=("in_app", "push"),
             )
-            for user in User.objects.filter(
-                is_active=True,
-                is_approved=True,
-                role__in=["MEMBER", "TREASURER"],
-            )
-        ]
-        Notification.objects.bulk_create(notifications)
 
         return Response(
-            {"status": f"Broadcast sent to {len(notifications)} users"},
+            {"status": f"Broadcast sent to {recipients.count()} users"},
             status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=False, methods=["post"], url_path="test-push")
+    def test_push(self, request):
+        from .service import NotificationService
+        from .constants import NotificationType
+        from .models import UserDevice
+
+        user = request.user
+        device_count = UserDevice.objects.filter(user=user, is_active=True).count()
+
+        results = NotificationService.send(
+            recipient=user,
+            title="SeedVest Push Notification Test",
+            message=f"Hello {user.first_name or 'Member'}! Your push notification service is working properly.",
+            category="SYSTEM",
+            notification_level="SUCCESS",
+            notification_type=NotificationType.SECURITY_ALERT,
+            link="/notifications",
+            channels=("in_app", "push"),
+            bypass_preferences=True,
+        )
+
+        return Response(
+            {
+                "message": "Test notification dispatched.",
+                "push_delivered": bool(results.get("push")),
+                "active_devices_count": device_count,
+            },
+            status=status.HTTP_200_OK,
         )

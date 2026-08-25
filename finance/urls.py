@@ -16,11 +16,14 @@ from .views import (
     AdminMemberListView,
     AdminGroupSummaryView,
     FinancialReportView,
+    FinancialCycleExcelReportView,
+    MemberStatementPdfView,
     TriggerAutoSaveView,
     AutoSavingGenerationHistoryView,
     MemberAnalyticsView,
     GroupAnalyticsView,
     FinancialSecretaryReportView,
+    LoanViewSet,
 )
 
 # Create a DRF router and register the ViewSets
@@ -31,6 +34,7 @@ router.register(r"auto-savings", AutoSavingConfigViewSet, basename="auto-saving"
 router.register(r"targets", SavingsTargetViewSet, basename="savings-target")
 router.register(r"investments", InvestmentViewSet, basename="investment")
 router.register(r"financial-cycles", FinancialCycleViewSet, basename="financial-cycle")
+router.register(r"loans", LoanViewSet, basename="loan")
 router.register(
     r"monthly-contributions",
     MonthlyContributionReportViewSet,
@@ -58,6 +62,8 @@ urlpatterns = [
         name="admin-group-summary",
     ),
     path("reports/summary/", FinancialReportView.as_view(), name="financial-report-summary"),
+    path("reports/financial-cycle-excel/", FinancialCycleExcelReportView.as_view(), name="financial-cycle-excel"),
+    path("reports/member-statement-pdf/", MemberStatementPdfView.as_view(), name="member-statement-pdf"),
     path("reports/financial/", FinancialSecretaryReportView.as_view(), name="financial-report-secretary"),
     path("reports/annual/", CycleAnnualSummaryView.as_view(), name="financial-report-annual"),
     path("trigger-auto-save/", TriggerAutoSaveView.as_view(), name="trigger-auto-save"),

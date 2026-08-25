@@ -361,38 +361,53 @@ class UserViewSet(viewsets.ModelViewSet):
     def resend_setup_link(self, request, pk=None):
         user = self.get_object()
 
-        if user.is_active:
+        if not user.email:
             return Response(
-                {"error": "User account is already active."},
+                {"error": "Member does not have a registered email address."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         if user.application_status != "APPROVED":
             return Response(
-                {"error": "Setup link can only be sent to approved users."},
+                {"error": "Setup or reset link can only be sent to approved members."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if user.is_active:
+            return Response(
+                {"error": "This member's account is already active. Please use Admin Password Reset for active accounts."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         uid = urlsafe_base64_encode(force_bytes(user.pk))
         token = token_generator.make_token(user)
+
         reset_path = reverse(
             "password_reset_page",
             kwargs={"uid": uid, "token": token},
         )
         setup_link = build_backend_url(reset_path)
-
         email_sent = bool(send_admin_account_setup_email(user, setup_link))
+        action_type = "Account setup"
+
+        # Log audit entry
+        from .models import AuditLog
+        AuditLog.objects.create(
+            actor=request.user,
+            target_user=user,
+            action="PASSWORD_RESET",
+            notes=f"Admin ({request.user.email}) resent {action_type.lower()} link to {user.email} (Sent: {email_sent})."
+        )
 
         return Response(
             {
-                "message": "Setup link sent successfully."
+                "message": f"{action_type} link sent successfully to {user.email}."
                 if email_sent
-                else "Setup link was not delivered. Check the SMTP configuration and server logs.",
+                else f"{action_type} link could not be delivered. Check SMTP configuration and server logs.",
                 "email_sent": email_sent,
             },
             status=status.HTTP_200_OK,
         )
-
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):
         user = self.get_object()
@@ -553,6 +568,7 @@ class UserViewSet(viewsets.ModelViewSet):
             bypass_preferences=True,
         )
 
+
         return Response(
             {"message": f"Role for {user.email} updated to {new_role}.", "role": new_role},
             status=status.HTTP_200_OK,
@@ -590,7 +606,6 @@ class UserViewSet(viewsets.ModelViewSet):
             # 5. Now safe to delete — remaining FKs (contributions, notifications, memberships) are CASCADE
             cleanup_unmanaged_user_foreign_keys(instance.id)
             instance.delete()
-
 
     @action(detail=False, methods=["delete"], permission_classes=[IsAuthenticated])
     def delete_account(self, request):
@@ -644,14 +659,19 @@ class UserViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="admin-reset-password")
     def admin_reset_password(self, request, pk=None):
+        import secrets
         user = self.get_object()
         new_password = request.data.get("new_password")
 
-        if not new_password or len(str(new_password).strip()) < 6:
-            return Response(
-                {"error": "New password is required and must be at least 6 characters long."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        if new_password:
+            new_password = str(new_password).strip()
+            if len(new_password) < 6:
+                return Response(
+                    {"error": "New password must be at least 6 characters long."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            new_password = f"Seed{secrets.randbelow(8999) + 1000}!"
 
         user.set_password(new_password)
         update_fields = ["password"]
@@ -669,8 +689,40 @@ class UserViewSet(viewsets.ModelViewSet):
             notes=f"Admin ({request.user.email}) reset password for member ID {user.id} ({user.email or user.membership_number or user.phone_number})."
         )
 
+        from notifications.constants import NotificationType
+        from notifications.service import NotificationService
+        NotificationService.send(
+            recipient=user,
+            title="Password Reset by Admin",
+            message="Your account password was updated by an administrator. Please log in using your new credentials.",
+            notification_type=NotificationType.SECURITY_ALERT,
+            notification_level="WARNING",
+            link="/profile",
+            channels=("in_app", "push", "email"),
+            email_subject="Security Alert: Password Reset - SeedVest",
+            email_message=(
+                f"Dear {user.first_name or 'Member'},\n\n"
+                "Your SeedVest password has been reset by an administrator.\n\n"
+                "If you requested this assistance, please log in with the new password provided by your admin.\n"
+                "If you did not request this, please contact support immediately."
+            ),
+            bypass_preferences=True,
+        )
+
+        member_name = f"{user.first_name} {user.last_name}".strip() or user.email or user.phone_number or "Member"
         return Response(
-            {"message": f"Password for {user.first_name} {user.last_name} updated successfully."},
+            {
+                "message": f"Password for {member_name} updated successfully.",
+                "user_id": user.id,
+                "credentials": {
+                    "name": member_name,
+                    "membership_number": user.membership_number,
+                    "phone_number": user.phone_number,
+                    "email": user.email,
+                    "login_identifier": user.phone_number or user.membership_number or user.email,
+                    "new_password": new_password,
+                },
+            },
             status=status.HTTP_200_OK,
         )
 

@@ -2,6 +2,7 @@ import csv
 from datetime import date
 from io import StringIO
 
+from django.conf import settings
 from django.db import models, transaction
 from django.db.models import (
     Sum,
@@ -44,6 +45,9 @@ from finance.permissions import (
 )
 from groups.models import Group, Membership
 from .models import (
+    Loan,
+    LoanGuarantor,
+    LoanRepayment,
     Contribution,
     Penalty,
     AutoSavingConfig,
@@ -56,6 +60,10 @@ from .models import (
     CycleClosureReport,
 )
 from .serializers import (
+    LoanSerializer,
+    LoanGuarantorSerializer,
+    LoanRepaymentSerializer,
+    LoanApplicationSerializer,
     ContributionSerializer,
     ManualContributionProposalSerializer,
     PenaltySerializer,
@@ -80,6 +88,7 @@ from .analytics_serializers import MemberAnalyticsSerializer, GroupAnalyticsSeri
 from .services import InsightService, AutoSaveService
 from .cycle_services import FinancialCycleService, FinancialDataAuditService
 from .report_service import ReportService
+from .reports import build_financial_cycle_workbook, build_member_statement_pdf
 
 
 class ContributionViewSet(viewsets.ModelViewSet):
@@ -164,6 +173,39 @@ class ContributionViewSet(viewsets.ModelViewSet):
         old_amount = str(instance.amount)
         old_status = str(instance.status)
         old_date = str(instance.due_date)
+
+        contribution = serializer.save()
+
+        # Audit Logging
+        changes = []
+        if old_amount != str(contribution.amount):
+            changes.append(f"amount: {old_amount} -> {contribution.amount}")
+        if old_status != str(contribution.status):
+            changes.append(f"status: {old_status} -> {contribution.status}")
+        if old_date != str(contribution.due_date):
+            changes.append(f"due_date: {old_date} -> {contribution.due_date}")
+
+        if changes:
+            AuditLog.objects.create(
+                actor=self.request.user,
+                target_user=contribution.user,
+                action="FINANCE_CHANGE",
+                notes=f"Updated contribution #{contribution.id}: {', '.join(changes)}"
+            )
+
+            # Recalculate monthly records and cycle totals
+            FinancialCycleService.sync_monthly_record_from_contribution(contribution)
+            if contribution.financial_cycle:
+                contribution.financial_cycle.refresh_totals()
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+
+    def perform_update(self, serializer):
+        instance = self.get_object()
+        old_amount = str(instance.amount)
+        old_status = str(instance.status)
+        old_date = str(instance.due_date)
         
         contribution = serializer.save()
         
@@ -200,6 +242,7 @@ class ContributionViewSet(viewsets.ModelViewSet):
         ).data
         headers = self.get_success_headers(data)
         return Response(data, status=status.HTTP_201_CREATED, headers=headers)
+
 
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):
@@ -244,6 +287,18 @@ class ContributionViewSet(viewsets.ModelViewSet):
         contribution.rejection_reason = ""
         contribution.save(skip_status_evaluation=True)
         FinancialCycleService.sync_monthly_record_from_contribution(contribution)
+
+        NotificationService.send_after_commit(
+            recipient=contribution.user,
+            title="Contribution Approved",
+            message=f"Your contribution of KES {contribution.amount} for {contribution.group.name if contribution.group else 'your group'} has been approved.",
+            category="PROPOSAL",
+            notification_type=NotificationType.CONTRIBUTION_APPROVED,
+            notification_level="SUCCESS",
+            link="/dashboard",
+            channels=("in_app", "push"),
+        )
+
         return Response({"status": "Contribution approved and marked as paid"})
 
     @action(detail=True, methods=["post"])
@@ -290,6 +345,18 @@ class ContributionViewSet(viewsets.ModelViewSet):
         contribution.rejection_reason = reason
         contribution.save(skip_status_evaluation=True)
         FinancialCycleService.sync_monthly_record_from_contribution(contribution)
+
+        NotificationService.send_after_commit(
+            recipient=contribution.user,
+            title="Contribution Rejected",
+            message=f"Your contribution proposal of KES {contribution.amount} was not approved. Reason: {reason}",
+            category="PROPOSAL",
+            notification_type=NotificationType.CONTRIBUTION_REJECTED,
+            notification_level="WARNING",
+            link="/dashboard",
+            channels=("in_app", "push"),
+        )
+
         return Response({"status": "Contribution rejected"})
 
     def destroy(self, request, *args, **kwargs):
@@ -522,6 +589,17 @@ class PenaltyViewSet(viewsets.ModelViewSet):
                     f"Issued penalty of {amount} for group '{penalty.contribution.group.name if penalty.contribution else 'N/A'}'. "
                     f"Reason: {penalty.reason}"
                 )
+            )
+
+            NotificationService.send_after_commit(
+                recipient=target_user,
+                title="Penalty Issued",
+                message=f"A penalty of KES {amount} was issued. Reason: {penalty.reason}",
+                category="SYSTEM",
+                notification_type=NotificationType.PENALTY_ISSUED,
+                notification_level="WARNING",
+                link="/penalties",
+                channels=("in_app", "push"),
             )
 
 
@@ -1571,6 +1649,93 @@ class AdminGroupSummaryView(APIView):
         })
 
 
+def _has_group_report_access(user, group):
+    if user.is_superuser or user.role == "ADMIN":
+        return True
+    if user.role == "TREASURER" and group.treasurer_id == user.id:
+        return True
+    return group.memberships.filter(user=user, role="FINANCIAL_SECRETARY").exists()
+
+
+class FinancialCycleExcelReportView(APIView):
+    """Download a financial-cycle contribution, loan and balance-sheet workbook."""
+
+    permission_classes = [IsAuthenticated, IsApprovedUser]
+
+    def get(self, request):
+        cycle_id = request.query_params.get("cycle_id")
+        if not cycle_id:
+            return Response({"detail": "cycle_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            cycle = FinancialCycle.objects.select_related("group").get(pk=cycle_id)
+        except FinancialCycle.DoesNotExist:
+            return Response({"detail": "Financial cycle not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not _has_group_report_access(request.user, cycle.group):
+            return Response(
+                {"detail": "You do not have permission to export this cycle."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        workbook = build_financial_cycle_workbook(cycle)
+        response = HttpResponse(
+            workbook.getvalue(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        response["Content-Disposition"] = (
+            f'attachment; filename="seedvest-cycle-{cycle.id}-ledger.xlsx"'
+        )
+        return response
+
+
+class MemberStatementPdfView(APIView):
+    """Download a PDF statement for the requesting member or a permitted officer."""
+
+    permission_classes = [IsAuthenticated, IsApprovedUser]
+
+    def get(self, request):
+        group_id = request.query_params.get("group_id")
+        if not group_id:
+            return Response({"detail": "group_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            group = Group.objects.get(pk=group_id)
+        except Group.DoesNotExist:
+            return Response({"detail": "Group not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        member_id = request.query_params.get("user_id") or request.user.id
+        try:
+            member = User.objects.get(pk=member_id)
+        except User.DoesNotExist:
+            return Response({"detail": "Member not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not Membership.objects.filter(user=member, group=group).exists():
+            return Response(
+                {"detail": "The selected member does not belong to this group."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if member.id != request.user.id and not _has_group_report_access(request.user, group):
+            return Response(
+                {"detail": "You can only download your own statement."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        cycle = None
+        cycle_id = request.query_params.get("cycle_id")
+        if cycle_id:
+            try:
+                cycle = FinancialCycle.objects.get(pk=cycle_id, group=group)
+            except FinancialCycle.DoesNotExist:
+                return Response(
+                    {"detail": "Financial cycle not found for this group."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+        report = build_member_statement_pdf(member, group, cycle=cycle)
+        response = HttpResponse(report.getvalue(), content_type="application/pdf")
+        response["Content-Disposition"] = (
+            f'attachment; filename="seedvest-member-{member.id}-statement.pdf"'
+        )
+        return response
+
 class FinancialReportView(APIView):
     """
     Provides monthly financial summary reports for admins and treasurers.
@@ -1756,3 +1921,484 @@ class FinancialSecretaryReportView(APIView):
         
         serializer = FinancialSecretaryReportSerializer(data)
         return Response(serializer.data)
+
+
+
+# =========================
+# Loan Management ViewSet
+# =========================
+class LoanViewSet(viewsets.ModelViewSet):
+    """Loan applications, guarantor decisions, disbursements and repayments."""
+
+    queryset = Loan.objects.filter(is_archived=False)
+    serializer_class = LoanSerializer
+    permission_classes = [IsAuthenticated, IsApprovedUser]
+
+    MANAGEMENT_ROLES = ("ADMIN", "TREASURER")
+    ACTIVE_LOAN_STATUSES = (
+        "PENDING_GUARANTORS",
+        "PENDING_APPROVAL",
+        "APPROVED",
+        "DISBURSED",
+    )
+
+    def _is_group_manager(self, user, group):
+        return bool(
+            user.is_superuser
+            or user.role == "ADMIN"
+            or (user.role == "TREASURER" and group.treasurer_id == user.id)
+        )
+
+    def _is_loan_manager(self, user, loan):
+        return self._is_group_manager(user, loan.group)
+
+    def _serialize_loan(self, loan_id):
+        loan = (
+            Loan.objects.select_related("user", "group", "financial_cycle", "approved_by")
+            .prefetch_related("guarantors__guarantor_user", "repayments__user", "repayments__verified_by")
+            .get(pk=loan_id)
+        )
+        return LoanSerializer(loan).data
+
+    def get_queryset(self):
+        user = self.request.user
+        queryset = Loan.objects.filter(is_archived=False)
+        group_id = self.request.query_params.get("group_id")
+        status_param = self.request.query_params.get("status")
+
+        if user.is_superuser or user.role == "ADMIN":
+            pass
+        elif user.role == "TREASURER":
+            queryset = queryset.filter(group__treasurer=user)
+        elif user.role == "FINANCIAL_SECRETARY":
+            queryset = queryset.filter(
+                group__memberships__user=user,
+                group__memberships__role="FINANCIAL_SECRETARY",
+            )
+        else:
+            queryset = queryset.filter(
+                Q(user=user) | Q(guarantors__guarantor_user=user)
+            ).distinct()
+
+        if group_id:
+            queryset = queryset.filter(group_id=group_id)
+        if status_param:
+            queryset = queryset.filter(status=status_param)
+
+        return queryset.select_related("user", "group", "financial_cycle").prefetch_related(
+            "guarantors__guarantor_user",
+            "repayments__user",
+            "repayments__verified_by",
+        )
+
+    @action(detail=False, methods=["get"], url_path="eligible-guarantors")
+    def eligible_guarantors(self, request):
+        group_id = request.query_params.get("group_id")
+        if not group_id:
+            return Response(
+                {"detail": "group_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            group = Group.objects.get(pk=group_id)
+        except Group.DoesNotExist:
+            return Response({"detail": "Group not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not Membership.objects.filter(user=request.user, group=group).exists() and not self._is_group_manager(request.user, group):
+            return Response(
+                {"detail": "You do not have access to this group."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        memberships = (
+            Membership.objects.filter(
+                group=group,
+                user__is_approved=True,
+                user__is_active=True,
+            )
+            .exclude(user=request.user)
+            .select_related("user")
+            .order_by("user__first_name", "user__last_name", "user__email")
+        )
+        return Response(
+            [
+                {
+                    "id": membership.user_id,
+                    "full_name": (
+                        f"{membership.user.first_name} {membership.user.last_name}".strip()
+                        or membership.user.email
+                    ),
+                    "email": membership.user.email,
+                    "membership_role": membership.role,
+                }
+                for membership in memberships
+            ]
+        )
+
+    @action(detail=False, methods=["post"], url_path="apply")
+    def apply_for_loan(self, request):
+        serializer = LoanApplicationSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        try:
+            group = Group.objects.get(pk=data["group_id"])
+        except Group.DoesNotExist:
+            return Response({"group_id": ["Group not found."]}, status=status.HTTP_404_NOT_FOUND)
+
+        guarantor_ids = data["guarantor_user_ids"]
+        if request.user.id in guarantor_ids:
+            return Response(
+                {"guarantor_user_ids": ["You cannot guarantee your own loan."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not Membership.objects.filter(user=request.user, group=group).exists():
+            return Response(
+                {"group_id": ["You must be an active group member to apply for a loan."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        eligible_guarantors = Membership.objects.filter(
+            group=group,
+            user_id__in=guarantor_ids,
+            user__is_approved=True,
+            user__is_active=True,
+        ).select_related("user")
+        if eligible_guarantors.count() != len(guarantor_ids):
+            return Response(
+                {
+                    "guarantor_user_ids": [
+                        "Every guarantor must be an approved, active member of the selected group."
+                    ]
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        multiplier = Decimal(str(getattr(settings, "LOAN_MAX_SAVINGS_MULTIPLIER", 3)))
+        if multiplier <= 0:
+            multiplier = Decimal("3")
+        savings_total = (
+            Contribution.objects.filter(
+                user=request.user,
+                group=group,
+                status__in=["PAID", "LATE"],
+                is_archived=False,
+            ).aggregate(total=Sum("amount"))["total"]
+            or Decimal("0.00")
+        )
+        committed_principal = (
+            Loan.objects.filter(
+                user=request.user,
+                group=group,
+                status__in=self.ACTIVE_LOAN_STATUSES,
+                is_archived=False,
+            ).aggregate(total=Sum("amount"))["total"]
+            or Decimal("0.00")
+        )
+        available_limit = max(Decimal("0.00"), (savings_total * multiplier) - committed_principal)
+        if data["amount"] > available_limit:
+            return Response(
+                {
+                    "amount": [
+                        "Requested amount exceeds your available loan limit of "
+                        f"KES {available_limit:.2f}, based on savings."
+                    ]
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            cycle, _ = FinancialCycle.get_or_create_for_date(
+                group=group,
+                reference_date=date.today(),
+                created_by=request.user,
+            )
+            loan = Loan.objects.create(
+                user=request.user,
+                group=group,
+                financial_cycle=cycle,
+                amount=data["amount"],
+                interest_rate=data["interest_rate"],
+                duration_months=data["duration_months"],
+                purpose=data.get("purpose", ""),
+                status="PENDING_GUARANTORS",
+            )
+
+            guarantor_memberships = list(eligible_guarantors)
+            base_amount = (loan.amount / Decimal(len(guarantor_memberships))).quantize(
+                Decimal("0.01")
+            )
+            remaining_amount = loan.amount
+            for index, membership in enumerate(guarantor_memberships):
+                guaranteed_amount = (
+                    remaining_amount
+                    if index == len(guarantor_memberships) - 1
+                    else base_amount
+                )
+                remaining_amount -= guaranteed_amount
+                LoanGuarantor.objects.create(
+                    loan=loan,
+                    guarantor_user=membership.user,
+                    amount_guaranteed=guaranteed_amount,
+                )
+                NotificationService.send_after_commit(
+                    recipient=membership.user,
+                    title="Loan guarantor request",
+                    message=(
+                        f"{request.user.first_name or request.user.email} asked you to "
+                        f"guarantee KES {guaranteed_amount:,.2f} for loan #{loan.id}."
+                    ),
+                    category="SYSTEM",
+                    notification_level="INFO",
+                    notification_type=NotificationType.GENERAL,
+                    link=f"/loans/{loan.id}",
+                    channels=("in_app", "push"),
+                )
+
+        return Response(self._serialize_loan(loan.id), status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"], url_path="respond-guarantor")
+    def respond_guarantor(self, request, pk=None):
+        loan = self.get_object()
+        status_choice = request.data.get("status")
+        notes = request.data.get("notes", "")
+
+        if loan.status != "PENDING_GUARANTORS":
+            return Response(
+                {"detail": "Guarantor responses are no longer accepted for this loan."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if status_choice not in ("ACCEPTED", "REJECTED"):
+            return Response(
+                {"status": ["Choose ACCEPTED or REJECTED."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            guarantor = LoanGuarantor.objects.get(loan=loan, guarantor_user=request.user)
+        except LoanGuarantor.DoesNotExist:
+            return Response(
+                {"detail": "You are not a guarantor for this loan."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if guarantor.status != "PENDING":
+            return Response(
+                {"detail": "You have already responded to this guarantee."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            guarantor.status = status_choice
+            guarantor.response_notes = notes
+            guarantor.responded_at = timezone.now()
+            guarantor.save(update_fields=["status", "response_notes", "responded_at"])
+
+            guarantors = loan.guarantors.all()
+            if status_choice == "REJECTED":
+                loan.status = "REJECTED"
+                loan.rejection_reason = "A guarantor rejected the request."
+                loan.save(update_fields=["status", "rejection_reason", "updated_at"])
+            elif not guarantors.filter(status="PENDING").exists():
+                loan.status = "PENDING_APPROVAL"
+                loan.save(update_fields=["status", "updated_at"])
+                NotificationService.send_after_commit(
+                    recipient=loan.user,
+                    title="Loan ready for approval",
+                    message=(
+                        f"All guarantors accepted loan #{loan.id}. It is now awaiting "
+                        "management approval."
+                    ),
+                    category="SYSTEM",
+                    notification_level="SUCCESS",
+                    notification_type=NotificationType.GENERAL,
+                    link=f"/loans/{loan.id}",
+                    channels=("in_app", "push"),
+                )
+
+        return Response(self._serialize_loan(loan.id))
+
+    @action(detail=True, methods=["post"], url_path="approve")
+    def approve_loan(self, request, pk=None):
+        loan = self.get_object()
+        if not self._is_loan_manager(request.user, loan):
+            return Response(
+                {"detail": "Only the group treasurer or an admin can approve this loan."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if loan.status != "PENDING_APPROVAL":
+            return Response(
+                {"detail": "All guarantors must accept before management approval."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if loan.guarantors.filter(status="ACCEPTED").count() != loan.guarantors.count():
+            return Response(
+                {"detail": "All guarantors must accept before approval."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        loan.status = "APPROVED"
+        loan.approved_by = request.user
+        loan.approved_at = timezone.now()
+        loan.save(update_fields=["status", "approved_by", "approved_at", "updated_at"])
+        NotificationService.send_after_commit(
+            recipient=loan.user,
+            title="Loan approved",
+            message=f"Your loan of KES {loan.amount:,.2f} has been approved.",
+            category="SYSTEM",
+            notification_level="SUCCESS",
+            notification_type=NotificationType.GENERAL,
+            link=f"/loans/{loan.id}",
+            channels=("in_app", "push"),
+        )
+        return Response(self._serialize_loan(loan.id))
+
+    @action(detail=True, methods=["post"], url_path="disburse")
+    def disburse_loan(self, request, pk=None):
+        loan = self.get_object()
+        if not self._is_loan_manager(request.user, loan):
+            return Response(
+                {"detail": "Only the group treasurer or an admin can disburse this loan."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if loan.status != "APPROVED":
+            return Response(
+                {"detail": "Only approved loans can be disbursed."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from datetime import timedelta
+
+        loan.status = "DISBURSED"
+        loan.disbursed_at = timezone.now()
+        loan.due_date = date.today() + timedelta(days=30 * loan.duration_months)
+        loan.save(update_fields=["status", "disbursed_at", "due_date", "updated_at"])
+        NotificationService.send_after_commit(
+            recipient=loan.user,
+            title="Loan disbursed",
+            message=(
+                f"KES {loan.amount:,.2f} has been disbursed. Repayment is due on "
+                f"{loan.due_date:%d %b %Y}."
+            ),
+            category="SYSTEM",
+            notification_level="SUCCESS",
+            notification_type=NotificationType.GENERAL,
+            link=f"/loans/{loan.id}",
+            channels=("in_app", "push"),
+        )
+        return Response(self._serialize_loan(loan.id))
+
+    def _verify_repayment(self, repayment, verified_by):
+        with transaction.atomic():
+            repayment = LoanRepayment.objects.select_for_update().select_related("loan").get(
+                pk=repayment.pk
+            )
+            loan = Loan.objects.select_for_update().get(pk=repayment.loan_id)
+            if repayment.status != "PENDING":
+                raise ValueError("This repayment has already been processed.")
+            if repayment.amount > loan.balance_remaining:
+                raise ValueError("Repayment amount exceeds the remaining loan balance.")
+
+            repayment.status = "VERIFIED"
+            repayment.verified_by = verified_by
+            repayment.verified_at = timezone.now()
+            repayment.save(update_fields=["status", "verified_by", "verified_at"])
+
+            loan.balance_remaining -= repayment.amount
+            if loan.balance_remaining == Decimal("0.00"):
+                loan.status = "REPAID"
+            loan.save(update_fields=["balance_remaining", "status", "updated_at"])
+        return loan
+
+    @action(detail=True, methods=["post"], url_path="repay")
+    def make_repayment(self, request, pk=None):
+        loan = self.get_object()
+        is_manager = self._is_loan_manager(request.user, loan)
+        if request.user.id != loan.user_id and not is_manager:
+            return Response(
+                {"detail": "Only the borrower or group management can submit a repayment."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if loan.status != "DISBURSED":
+            return Response(
+                {"detail": "Repayments can only be submitted after disbursement."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            amount = Decimal(str(request.data.get("amount")))
+        except Exception:
+            return Response({"amount": ["A valid amount is required."]}, status=status.HTTP_400_BAD_REQUEST)
+        if amount <= Decimal("0.00"):
+            return Response({"amount": ["Repayment amount must be positive."]}, status=status.HTTP_400_BAD_REQUEST)
+        if amount > loan.balance_remaining:
+            return Response(
+                {"amount": ["Repayment cannot exceed the remaining balance."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        repayment = LoanRepayment.objects.create(
+            loan=loan,
+            user=request.user,
+            amount=amount,
+            payment_method=request.data.get("payment_method", "MPESA"),
+            transaction_reference=request.data.get("transaction_reference", ""),
+            notes=request.data.get("notes", ""),
+        )
+        if is_manager:
+            try:
+                loan = self._verify_repayment(repayment, request.user)
+            except ValueError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            title = "Loan repayment received"
+            message = f"KES {amount:,.2f} was verified. Remaining balance: KES {loan.balance_remaining:,.2f}."
+            notification_level = "SUCCESS"
+        else:
+            title = "Loan repayment submitted"
+            message = f"Your repayment of KES {amount:,.2f} is awaiting verification."
+            notification_level = "INFO"
+
+        NotificationService.send_after_commit(
+            recipient=loan.user,
+            title=title,
+            message=message,
+            category="SYSTEM",
+            notification_level=notification_level,
+            notification_type=NotificationType.GENERAL,
+            link=f"/loans/{loan.id}",
+            channels=("in_app", "push"),
+        )
+        return Response(self._serialize_loan(loan.id), status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"], url_path="verify-repayment")
+    def verify_repayment(self, request, pk=None):
+        loan = self.get_object()
+        if not self._is_loan_manager(request.user, loan):
+            return Response(
+                {"detail": "Only the group treasurer or an admin can verify repayments."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        repayment_id = request.data.get("repayment_id")
+        try:
+            repayment = LoanRepayment.objects.get(pk=repayment_id, loan=loan)
+            loan = self._verify_repayment(repayment, request.user)
+        except LoanRepayment.DoesNotExist:
+            return Response({"repayment_id": ["Repayment not found."]}, status=status.HTTP_404_NOT_FOUND)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        NotificationService.send_after_commit(
+            recipient=loan.user,
+            title="Loan repayment verified",
+            message=(
+                f"A repayment of KES {repayment.amount:,.2f} was verified. "
+                f"Remaining balance: KES {loan.balance_remaining:,.2f}."
+            ),
+            category="SYSTEM",
+            notification_level="SUCCESS",
+            notification_type=NotificationType.GENERAL,
+            link=f"/loans/{loan.id}",
+            channels=("in_app", "push"),
+        )
+        return Response(self._serialize_loan(loan.id))

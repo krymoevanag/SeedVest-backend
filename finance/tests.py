@@ -9,7 +9,7 @@ from django.contrib.auth import get_user_model
 
 from groups.models import Group, Membership
 from .cycle_services import FinancialCycleService
-from .models import Contribution, Penalty, MonthlyContributionRecord
+from .models import Contribution, Penalty, MonthlyContributionRecord, Loan, LoanGuarantor
 
 User = get_user_model()
 
@@ -552,3 +552,148 @@ class PenaltyEndpointTests(APITestCase):
         self.assertEqual(response.data[0]["status"], "UNPAID")
         self.assertEqual(response.data[0]["user_name"], "Penalty Member")
         self.assertEqual(response.data[0]["group_name"], "Penalty Group")
+
+
+class LoanWorkflowTests(APITestCase):
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            email="loan-admin@test.com",
+            password="AdminPass123!",
+            role="ADMIN",
+            is_active=True,
+            is_approved=True,
+        )
+        self.member = User.objects.create_user(
+            email="loan-member@test.com",
+            password="MemberPass123!",
+            role="MEMBER",
+            first_name="Loan",
+            last_name="Member",
+            is_active=True,
+            is_approved=True,
+        )
+        self.guarantor_one = User.objects.create_user(
+            email="guarantor-one@test.com",
+            password="MemberPass123!",
+            role="MEMBER",
+            first_name="Guarantor",
+            last_name="One",
+            is_active=True,
+            is_approved=True,
+        )
+        self.guarantor_two = User.objects.create_user(
+            email="guarantor-two@test.com",
+            password="MemberPass123!",
+            role="MEMBER",
+            first_name="Guarantor",
+            last_name="Two",
+            is_active=True,
+            is_approved=True,
+        )
+        self.group = Group.objects.create(
+            name="Loan Group",
+            description="Loan workflow group",
+            treasurer=self.admin,
+        )
+        for user in [self.member, self.guarantor_one, self.guarantor_two]:
+            Membership.objects.create(user=user, group=self.group, role="MEMBER")
+
+        Contribution.objects.create(
+            user=self.member,
+            group=self.group,
+            amount=Decimal("20000.00"),
+            expected_amount=Decimal("20000.00"),
+            due_date=date.today(),
+            paid_date=date.today(),
+            status="PAID",
+        )
+
+    def test_member_can_apply_for_a_loan_with_guarantors(self):
+        refresh = RefreshToken.for_user(self.member)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+        response = self.client.post(
+            reverse("loan-apply"),
+            {
+                "group_id": self.group.id,
+                "amount": "10000.00",
+                "interest_rate": "5.00",
+                "duration_months": 6,
+                "purpose": "School fees",
+                "guarantor_user_ids": [self.guarantor_one.id, self.guarantor_two.id],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["status"], "PENDING_GUARANTORS")
+        self.assertEqual(response.data["amount"], "10000.00")
+
+        loan = Loan.objects.get(pk=response.data["id"])
+        self.assertEqual(loan.guarantors.count(), 2)
+        self.assertTrue(loan.guarantors.filter(status="PENDING").exists())
+
+    def test_guarantors_accept_then_admin_approves_and_disburses_loan(self):
+        loan = Loan.objects.create(
+            user=self.member,
+            group=self.group,
+            amount=Decimal("12000.00"),
+            interest_rate=Decimal("5.00"),
+            duration_months=6,
+            total_payable=Decimal("12600.00"),
+            balance_remaining=Decimal("12600.00"),
+            status="PENDING_GUARANTORS",
+        )
+        LoanGuarantor.objects.create(
+            loan=loan,
+            guarantor_user=self.guarantor_one,
+            amount_guaranteed=Decimal("6000.00"),
+            status="PENDING",
+        )
+        LoanGuarantor.objects.create(
+            loan=loan,
+            guarantor_user=self.guarantor_two,
+            amount_guaranteed=Decimal("6000.00"),
+            status="PENDING",
+        )
+
+        guarantor_refresh = RefreshToken.for_user(self.guarantor_one)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {guarantor_refresh.access_token}")
+        response = self.client.post(
+            reverse("loan-respond-guarantor", args=[loan.id]),
+            {"status": "ACCEPTED", "notes": "Approved"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        guarantor_refresh = RefreshToken.for_user(self.guarantor_two)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {guarantor_refresh.access_token}")
+        response = self.client.post(
+            reverse("loan-respond-guarantor", args=[loan.id]),
+            {"status": "ACCEPTED", "notes": "Approved"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        loan.refresh_from_db()
+        self.assertEqual(loan.status, "PENDING_APPROVAL")
+
+        admin_refresh = RefreshToken.for_user(self.admin)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {admin_refresh.access_token}")
+        response = self.client.post(
+            reverse("loan-approve", args=[loan.id]),
+            {},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        loan.refresh_from_db()
+        self.assertEqual(loan.status, "APPROVED")
+
+        response = self.client.post(
+            reverse("loan-disburse", args=[loan.id]),
+            {},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        loan.refresh_from_db()
+        self.assertEqual(loan.status, "DISBURSED")
+        self.assertIsNotNone(loan.due_date)

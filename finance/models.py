@@ -866,3 +866,163 @@ class InvestmentReturn(models.Model):
 
     def __str__(self):
         return f"Return of {self.amount} for {self.investment.name} on {self.payout_date}"
+
+
+# =========================
+# Loan & Guarantor Models
+# =========================
+class Loan(models.Model):
+    STATUS_CHOICES = [
+        ("PENDING_GUARANTORS", "Pending Guarantors"),
+        ("PENDING_APPROVAL", "Pending Approval"),
+        ("APPROVED", "Approved"),
+        ("DISBURSED", "Disbursed"),
+        ("REPAID", "Repaid"),
+        ("REJECTED", "Rejected"),
+        ("DEFAULTED", "Defaulted"),
+    ]
+
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="loans",
+    )
+    group = models.ForeignKey(
+        Group,
+        on_delete=models.CASCADE,
+        related_name="loans",
+    )
+    financial_cycle = models.ForeignKey(
+        FinancialCycle,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="loans",
+    )
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    interest_rate = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal("5.00")
+    )
+    duration_months = models.IntegerField(default=1)
+    total_payable = models.DecimalField(max_digits=12, decimal_places=2)
+    balance_remaining = models.DecimalField(max_digits=12, decimal_places=2)
+    purpose = models.TextField(blank=True, default="")
+    status = models.CharField(
+        max_length=25, choices=STATUS_CHOICES, default="PENDING_GUARANTORS"
+    )
+    rejection_reason = models.TextField(blank=True, default="")
+    approved_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="approved_loans",
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+    disbursed_at = models.DateTimeField(null=True, blank=True)
+    due_date = models.DateField(null=True, blank=True)
+    is_archived = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Loan #{self.id}: {self.user.email} - KES {self.amount} ({self.status})"
+
+    def save(self, *args, **kwargs):
+        if not self.total_payable:
+            # Interest is simple interest charged for each repayment cycle.
+            interest_multiplier = Decimal("1.00") + (
+                (self.interest_rate / Decimal("100.00"))
+                * Decimal(self.duration_months)
+            )
+            self.total_payable = (self.amount * interest_multiplier).quantize(
+                Decimal("0.01")
+            )
+        if self.balance_remaining is None:
+            self.balance_remaining = self.total_payable
+        super().save(*args, **kwargs)
+
+
+class LoanGuarantor(models.Model):
+    STATUS_CHOICES = [
+        ("PENDING", "Pending"),
+        ("ACCEPTED", "Accepted"),
+        ("REJECTED", "Rejected"),
+    ]
+
+    loan = models.ForeignKey(
+        Loan,
+        on_delete=models.CASCADE,
+        related_name="guarantors",
+    )
+    guarantor_user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="guaranteed_loans",
+    )
+    amount_guaranteed = models.DecimalField(max_digits=12, decimal_places=2)
+    status = models.CharField(
+        max_length=20, choices=STATUS_CHOICES, default="PENDING"
+    )
+    response_notes = models.TextField(blank=True, default="")
+    responded_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["loan", "guarantor_user"],
+                name="unique_guarantor_per_loan",
+            )
+        ]
+
+    def __str__(self):
+        return f"Guarantor {self.guarantor_user.email} for Loan #{self.loan.id} ({self.status})"
+
+
+class LoanRepayment(models.Model):
+    STATUS_CHOICES = [
+        ("PENDING", "Pending verification"),
+        ("VERIFIED", "Verified"),
+        ("REJECTED", "Rejected"),
+    ]
+
+    loan = models.ForeignKey(
+        Loan,
+        on_delete=models.CASCADE,
+        related_name="repayments",
+    )
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="loan_repayments",
+    )
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    payment_method = models.CharField(max_length=50, default="MPESA")
+    transaction_reference = models.CharField(max_length=100, blank=True, default="")
+    notes = models.TextField(blank=True, default="")
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default="PENDING",
+    )
+    verified_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="verified_loan_repayments",
+    )
+    verified_at = models.DateTimeField(null=True, blank=True)
+    paid_at = models.DateTimeField(default=timezone.now)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-paid_at"]
+
+    def __str__(self):
+        return f"Repayment KES {self.amount} for Loan #{self.loan.id} on {self.paid_at.date()}"

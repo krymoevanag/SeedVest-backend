@@ -1,4 +1,5 @@
 from datetime import date
+from django.conf import settings
 from django.db.models import Sum
 from decimal import Decimal
 from rest_framework import serializers
@@ -14,6 +15,9 @@ from .models import (
     Investment,
     InvestmentStatusLog,
     MonthlySavingGeneration,
+    Loan,
+    LoanGuarantor,
+    LoanRepayment,
 )
 from .constants import MIN_MONTHLY_SAVING
 from groups.models import Group, Membership
@@ -868,3 +872,109 @@ class FinancialSecretaryReportSerializer(serializers.Serializer):
     net_savings = serializers.DecimalField(max_digits=15, decimal_places=2)
     member_summaries = serializers.ListField(child=serializers.DictField())
     monthly_trends = serializers.ListField(child=serializers.DictField())
+
+
+# =========================
+# Loan Serializers
+# =========================
+class LoanGuarantorSerializer(serializers.ModelSerializer):
+    guarantor_name = serializers.SerializerMethodField()
+    guarantor_email = serializers.SerializerMethodField()
+
+    class Meta:
+        model = LoanGuarantor
+        fields = "__all__"
+        read_only_fields = ("responded_at", "created_at")
+
+    def get_guarantor_name(self, obj):
+        return (
+            f"{obj.guarantor_user.first_name} {obj.guarantor_user.last_name}".strip()
+            or obj.guarantor_user.email
+        )
+
+    def get_guarantor_email(self, obj):
+        return obj.guarantor_user.email
+
+
+class LoanRepaymentSerializer(serializers.ModelSerializer):
+    user_name = serializers.SerializerMethodField()
+    verified_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = LoanRepayment
+        fields = "__all__"
+        read_only_fields = (
+            "created_at",
+            "paid_at",
+            "status",
+            "verified_by",
+            "verified_at",
+        )
+
+    def get_user_name(self, obj):
+        return f"{obj.user.first_name} {obj.user.last_name}".strip() or obj.user.email
+
+    def get_verified_by_name(self, obj):
+        if not obj.verified_by:
+            return None
+        return (
+            f"{obj.verified_by.first_name} {obj.verified_by.last_name}".strip()
+            or obj.verified_by.email
+        )
+
+
+class LoanSerializer(serializers.ModelSerializer):
+    borrower_name = serializers.SerializerMethodField()
+    group_name = serializers.CharField(source="group.name", read_only=True)
+    guarantors = LoanGuarantorSerializer(many=True, read_only=True)
+    repayments = LoanRepaymentSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Loan
+        fields = "__all__"
+        read_only_fields = (
+            "total_payable",
+            "balance_remaining",
+            "status",
+            "approved_by",
+            "approved_at",
+            "disbursed_at",
+            "is_archived",
+            "created_at",
+            "updated_at",
+        )
+
+    def get_borrower_name(self, obj):
+        return f"{obj.user.first_name} {obj.user.last_name}".strip() or obj.user.email
+
+
+class LoanApplicationSerializer(serializers.Serializer):
+    group_id = serializers.IntegerField()
+    amount = serializers.DecimalField(max_digits=12, decimal_places=2)
+    interest_rate = serializers.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        min_value=Decimal("5.00"),
+        max_value=Decimal("10.00"),
+        default=Decimal("5.00"),
+    )
+    duration_months = serializers.IntegerField(default=1, min_value=1)
+    purpose = serializers.CharField(required=False, allow_blank=True)
+    guarantor_user_ids = serializers.ListField(child=serializers.IntegerField())
+
+    def validate_amount(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Loan amount must be greater than zero.")
+        return value
+
+    def validate_guarantor_user_ids(self, value):
+        if len(value) != len(set(value)):
+            raise serializers.ValidationError("Each guarantor can only be nominated once.")
+
+        required_count = int(getattr(settings, "LOAN_MIN_GUARANTORS", 2))
+        required_count = max(1, min(required_count, 2))
+        if len(value) < required_count:
+            raise serializers.ValidationError(
+                f"At least {required_count} guarantor(s) are required."
+            )
+        return value
