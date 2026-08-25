@@ -16,6 +16,7 @@ from .models import (
     InvestmentStatusLog,
     MonthlySavingGeneration,
     Loan,
+    LoanInstallment,
     LoanGuarantor,
     LoanRepayment,
 )
@@ -950,11 +951,18 @@ class LoanRepaymentSerializer(serializers.ModelSerializer):
         )
 
 
+class LoanInstallmentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = LoanInstallment
+        fields = "__all__"
+
+
 class LoanSerializer(serializers.ModelSerializer):
     borrower_name = serializers.SerializerMethodField()
     group_name = serializers.CharField(source="group.name", read_only=True)
     guarantors = LoanGuarantorSerializer(many=True, read_only=True)
     repayments = LoanRepaymentSerializer(many=True, read_only=True)
+    installments = LoanInstallmentSerializer(many=True, read_only=True)
 
     class Meta:
         model = Loan

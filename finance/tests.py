@@ -2,6 +2,8 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from django.utils import timezone
+from django.core.management import call_command
+from io import StringIO
 
 from django.urls import reverse
 from rest_framework import status
@@ -18,6 +20,7 @@ from .models import (
     Loan,
     LoanGuarantor,
     LoanRepayment,
+    LoanInstallment,
 )
 
 User = get_user_model()
@@ -758,6 +761,37 @@ class LoanWorkflowTests(APITestCase):
         loan.refresh_from_db()
         self.assertEqual(loan.status, "DISBURSED")
         self.assertIsNotNone(loan.due_date)
+        installments = LoanInstallment.objects.filter(loan=loan)
+        self.assertEqual(installments.count(), 6)
+        self.assertEqual(
+            sum(item.total_due for item in installments),
+            loan.total_payable,
+        )
+
+    def test_overdue_command_marks_past_due_installments(self):
+        loan = Loan.objects.create(
+            user=self.member,
+            group=self.group,
+            amount=Decimal("4000.00"),
+            interest_rate=Decimal("5.00"),
+            duration_months=1,
+            status="DISBURSED",
+        )
+        installment = LoanInstallment.objects.create(
+            loan=loan,
+            installment_number=1,
+            due_date=date.today() - timedelta(days=1),
+            principal_amount=Decimal("4000.00"),
+            interest_amount=Decimal("200.00"),
+            total_due=Decimal("4200.00"),
+        )
+
+        output = StringIO()
+        call_command("process_overdue_loans", stdout=output)
+
+        installment.refresh_from_db()
+        self.assertEqual(installment.status, "OVERDUE")
+        self.assertIn("processed: 1", output.getvalue())
 
     def test_manager_can_reject_pending_loan_with_reason(self):
         loan = Loan.objects.create(

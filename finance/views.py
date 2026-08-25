@@ -63,6 +63,7 @@ from .serializers import (
     LoanSerializer,
     LoanGuarantorSerializer,
     LoanRepaymentSerializer,
+    LoanInstallmentSerializer,
     LoanApplicationSerializer,
     ContributionSerializer,
     ManualContributionProposalSerializer,
@@ -90,6 +91,7 @@ from .analytics_serializers import MemberAnalyticsSerializer, GroupAnalyticsSeri
 from .services import InsightService, AutoSaveService
 from .cycle_services import FinancialCycleService, FinancialDataAuditService
 from .report_service import ReportService
+from .loan_installment_service import generate_loan_installments
 from .member_financial_profile import (
     build_member_financial_profile,
     build_member_savings_history,
@@ -2064,7 +2066,12 @@ class LoanViewSet(viewsets.ModelViewSet):
     def _serialize_loan(self, loan_id):
         loan = (
             Loan.objects.select_related("user", "group", "financial_cycle", "approved_by")
-            .prefetch_related("guarantors__guarantor_user", "repayments__user", "repayments__verified_by")
+            .prefetch_related(
+                "guarantors__guarantor_user",
+                "repayments__user",
+                "repayments__verified_by",
+                "installments",
+            )
             .get(pk=loan_id)
         )
         return LoanSerializer(loan).data
@@ -2098,6 +2105,7 @@ class LoanViewSet(viewsets.ModelViewSet):
             "guarantors__guarantor_user",
             "repayments__user",
             "repayments__verified_by",
+            "installments",
         )
 
     def _require_loan_dashboard_access(self, request):
@@ -2500,6 +2508,7 @@ class LoanViewSet(viewsets.ModelViewSet):
         loan.disbursed_at = timezone.now()
         loan.due_date = date.today() + timedelta(days=30 * loan.duration_months)
         loan.save(update_fields=["status", "disbursed_at", "due_date", "updated_at"])
+        generate_loan_installments(loan, loan.disbursed_at.date())
         NotificationService.send_after_commit(
             recipient=loan.user,
             title="Loan disbursed",

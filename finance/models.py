@@ -946,6 +946,39 @@ class Loan(models.Model):
         super().save(*args, **kwargs)
 
 
+class LoanInstallment(models.Model):
+    STATUS_CHOICES = [
+        ("PENDING", "Pending"),
+        ("PAID", "Paid"),
+        ("OVERDUE", "Overdue"),
+    ]
+
+    loan = models.ForeignKey(
+        Loan,
+        on_delete=models.CASCADE,
+        related_name="installments",
+    )
+    installment_number = models.PositiveIntegerField()
+    due_date = models.DateField()
+    principal_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    interest_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    total_due = models.DecimalField(max_digits=12, decimal_places=2)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="PENDING")
+    paid_date = models.DateField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["installment_number"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["loan", "installment_number"],
+                name="unique_installment_per_loan",
+            )
+        ]
+
+    def __str__(self):
+        return f"Loan #{self.loan_id} installment {self.installment_number} ({self.status})"
+
+
 class LoanGuarantor(models.Model):
     STATUS_CHOICES = [
         ("PENDING", "Pending"),
