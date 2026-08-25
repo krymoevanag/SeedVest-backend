@@ -872,6 +872,33 @@ class FinancialSecretaryReportSerializer(serializers.Serializer):
     net_savings = serializers.DecimalField(max_digits=15, decimal_places=2)
     member_summaries = serializers.ListField(child=serializers.DictField())
     monthly_trends = serializers.ListField(child=serializers.DictField())
+    totals = serializers.DictField(required=False)
+    monthly_summaries = serializers.ListField(
+        child=serializers.DictField(), required=False
+    )
+
+
+class MemberFinancialProfileSerializer(serializers.Serializer):
+    member = serializers.DictField()
+    total_savings = serializers.DecimalField(max_digits=15, decimal_places=2)
+    total_contributions = serializers.DecimalField(max_digits=15, decimal_places=2)
+    total_penalties = serializers.DecimalField(max_digits=15, decimal_places=2)
+    total_investments = serializers.DecimalField(max_digits=15, decimal_places=2)
+    active_loans = serializers.IntegerField()
+    outstanding_balance = serializers.DecimalField(max_digits=15, decimal_places=2)
+    overdue_loans = serializers.IntegerField()
+    overdue_balance = serializers.DecimalField(max_digits=15, decimal_places=2)
+    total_repayments = serializers.DecimalField(max_digits=15, decimal_places=2)
+    net_position = serializers.DecimalField(max_digits=15, decimal_places=2)
+
+
+class MemberSavingsHistoryEntrySerializer(serializers.Serializer):
+    type = serializers.CharField()
+    date = serializers.DateField()
+    amount = serializers.DecimalField(max_digits=15, decimal_places=2)
+    status = serializers.CharField()
+    description = serializers.CharField()
+    reference = serializers.CharField(allow_null=True, allow_blank=True)
 
 
 # =========================

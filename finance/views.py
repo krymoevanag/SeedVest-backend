@@ -1,5 +1,5 @@
 import csv
-from datetime import date
+from datetime import date, timedelta
 from io import StringIO
 
 from django.conf import settings
@@ -82,13 +82,23 @@ from .serializers import (
     AdminMembershipSerializer,
     MonthlySavingGenerationSerializer,
     InsightSerializer,
+    MemberFinancialProfileSerializer,
+    MemberSavingsHistoryEntrySerializer,
 )
 from .analytics_service import AnalyticsService
 from .analytics_serializers import MemberAnalyticsSerializer, GroupAnalyticsSerializer
 from .services import InsightService, AutoSaveService
 from .cycle_services import FinancialCycleService, FinancialDataAuditService
 from .report_service import ReportService
+from .member_financial_profile import (
+    build_member_financial_profile,
+    build_member_savings_history,
+)
 from .reports import build_financial_cycle_workbook, build_member_statement_pdf
+
+
+def _decimal_sum(queryset, field):
+    return queryset.aggregate(total=Sum(field))["total"] or Decimal("0.00")
 
 
 class ContributionViewSet(viewsets.ModelViewSet):
@@ -1354,6 +1364,20 @@ class AdminResetMemberFinanceView(APIView):
                 is_archived=False,
             ).update(is_archived=True)
 
+            account_status_reset = False
+            if reset_account_status_requested:
+                target_user.application_status = "APPROVED"
+                target_user.is_approved = True
+                target_user.is_active = True
+                target_user.save(
+                    update_fields=[
+                        "application_status",
+                        "is_approved",
+                        "is_active",
+                    ]
+                )
+                account_status_reset = True
+
             for cycle_id in affected_cycle_ids:
                 cycle = FinancialCycle.objects.filter(pk=cycle_id).first()
                 if cycle:
@@ -1386,7 +1410,7 @@ class AdminResetMemberFinanceView(APIView):
                 "archived_standalone_penalties": archived_standalone_penalties,
                 "archived_linked_penalties": archived_linked_penalties,
                 "archived_monthly_records": archived_monthly_records,
-                "account_status_reset": False,
+                "account_status_reset": account_status_reset,
                 "account_status_reset_requested": reset_account_status_requested,
                 "account_preserved": True,
                 "reset_report": reset_report,
@@ -1589,6 +1613,73 @@ class AdminMemberListView(ListAPIView):
         )
 
         return queryset.order_by("group__name", "user__first_name", "user__last_name", "user__email")
+
+
+def _can_view_member_finance(user, member):
+    if user.is_superuser or user.role == "ADMIN":
+        return True
+    if user.id == member.id:
+        return True
+    if user.role == "TREASURER":
+        return Membership.objects.filter(
+            user=member,
+            group__treasurer=user,
+        ).exists()
+    if user.role == "FINANCIAL_SECRETARY":
+        return Membership.objects.filter(
+            user=member,
+            group__memberships__user=user,
+            group__memberships__role="FINANCIAL_SECRETARY",
+        ).exists()
+    return False
+
+
+class MemberFinancialProfileView(APIView):
+    permission_classes = [IsAuthenticated, IsApprovedUser]
+
+    def get(self, request, member_id):
+        try:
+            member = User.objects.get(pk=member_id)
+        except User.DoesNotExist:
+            return Response({"detail": "Member not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not _can_view_member_finance(request.user, member):
+            return Response({"detail": "You do not have access to this member's finances."}, status=status.HTTP_403_FORBIDDEN)
+        data = build_member_financial_profile(member)
+        return Response(MemberFinancialProfileSerializer(data).data)
+
+
+class MemberSavingsHistoryView(APIView):
+    permission_classes = [IsAuthenticated, IsApprovedUser]
+
+    def get(self, request, member_id):
+        try:
+            member = User.objects.get(pk=member_id)
+        except User.DoesNotExist:
+            return Response({"detail": "Member not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not _can_view_member_finance(request.user, member):
+            return Response({"detail": "You do not have access to this member's finances."}, status=status.HTTP_403_FORBIDDEN)
+
+        start_date = request.query_params.get("start_date")
+        end_date = request.query_params.get("end_date")
+        try:
+            parsed_start = date.fromisoformat(start_date) if start_date else None
+            parsed_end = date.fromisoformat(end_date) if end_date else None
+        except ValueError:
+            return Response({"detail": "Dates must use YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
+        if parsed_start and parsed_end and parsed_start > parsed_end:
+            return Response({"detail": "start_date cannot be after end_date."}, status=status.HTTP_400_BAD_REQUEST)
+
+        entry_type = request.query_params.get("type")
+        allowed_types = {"contribution", "penalty", "investment", "repayment"}
+        if entry_type and entry_type not in allowed_types:
+            return Response({"detail": "type must be contribution, penalty, investment, or repayment."}, status=status.HTTP_400_BAD_REQUEST)
+        entries = build_member_savings_history(
+            member,
+            start_date=parsed_start,
+            end_date=parsed_end,
+            entry_type=entry_type,
+        )
+        return Response(MemberSavingsHistoryEntrySerializer(entries, many=True).data)
 
 
 class AdminGroupSummaryView(APIView):
@@ -1899,14 +1990,25 @@ class FinancialSecretaryReportView(APIView):
             if cycle_id:
                 p_qs = p_qs.filter(contribution__financial_cycle_id=cycle_id)
                 
+            total_contributed = qs.filter(status__in=["PAID", "LATE"]).aggregate(
+                total=Sum("amount")
+            )["total"] or 0
+            outstanding = qs.exclude(status__in=["PAID", "LATE"]).aggregate(
+                total=Sum("expected_amount")
+            )["total"] or 0
+            member_name = f"{user.first_name} {user.last_name}".strip() or user.email
             member_summaries.append({
                 "id": user.id,
-                "name": f"{user.first_name} {user.last_name}".strip() or user.email,
-                "total_contributed": qs.filter(status__in=["PAID", "LATE"]).aggregate(total=Sum("amount"))["total"] or 0,
-                "outstanding": qs.exclude(status__in=["PAID", "LATE"]).aggregate(total=Sum("expected_amount"))["total"] or 0,
+                "name": member_name,
+                "member_name": member_name,
+                "total_contributed": total_contributed,
+                "total_paid": total_contributed,
+                "outstanding": outstanding,
                 "penalties_total": p_qs.aggregate(total=Sum("amount"))["total"] or 0,
+                "payment_consistency": 0,
             })
             
+        monthly_trends = group_stats.get("monthly_contributions", [])
         data = {
             "period": "Current Cycle" if not cycle_id else f"Cycle {cycle_id}",
             "group_name": group.name,
@@ -1916,7 +2018,14 @@ class FinancialSecretaryReportView(APIView):
             "total_investment_returns": group_stats.get("investment_summary", {}).get("total_returns", 0),
             "net_savings": group_stats["total_savings"] - group_stats["total_penalties"],
             "member_summaries": member_summaries,
-            "monthly_trends": group_stats.get("monthly_contributions", []),
+            "monthly_trends": monthly_trends,
+            "totals": {
+                "total_collected": group_stats["total_savings"],
+                "total_expected": group_stats.get("total_expected", 0),
+                "total_outstanding": group_stats.get("total_outstanding", 0),
+                "total_penalties": group_stats["total_penalties"],
+            },
+            "monthly_summaries": monthly_trends,
         }
         
         serializer = FinancialSecretaryReportSerializer(data)
@@ -1991,6 +2100,84 @@ class LoanViewSet(viewsets.ModelViewSet):
             "repayments__verified_by",
         )
 
+    def _require_loan_dashboard_access(self, request):
+        if request.user.is_superuser or request.user.role in (
+            "ADMIN",
+            "TREASURER",
+            "FINANCIAL_SECRETARY",
+        ):
+            return None
+        return Response(
+            {"detail": "Only financial officers can view the loan dashboard."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    @action(detail=False, methods=["get"], url_path="dashboard")
+    def dashboard(self, request):
+        denied = self._require_loan_dashboard_access(request)
+        if denied:
+            return denied
+
+        loans = self.filter_queryset(self.get_queryset())
+        today = date.today()
+        week_end = today + timedelta(days=7)
+        disbursed = loans.exclude(disbursed_at__isnull=True)
+        overdue = loans.filter(
+            Q(status="DEFAULTED")
+            | Q(status="DISBURSED", due_date__lt=today)
+        )
+        due_soon = loans.filter(
+            status="DISBURSED",
+            due_date__gte=today,
+            due_date__lte=week_end,
+        )
+        return Response({
+            "total_active_loans": loans.filter(
+                status__in=self.ACTIVE_LOAN_STATUSES
+            ).count(),
+            "total_disbursed": _decimal_sum(disbursed, "amount"),
+            "total_outstanding": _decimal_sum(
+                loans.filter(status__in=["APPROVED", "DISBURSED", "DEFAULTED"]),
+                "balance_remaining",
+            ),
+            "total_overdue": _decimal_sum(overdue, "balance_remaining"),
+            "loans_due_this_week": due_soon.count(),
+        })
+
+    @action(detail=False, methods=["get"], url_path="active")
+    def active(self, request):
+        denied = self._require_loan_dashboard_access(request)
+        if denied:
+            return denied
+        loans = self.filter_queryset(self.get_queryset()).filter(
+            status__in=self.ACTIVE_LOAN_STATUSES
+        )
+        return Response(LoanSerializer(loans, many=True).data)
+
+    @action(detail=False, methods=["get"], url_path="overdue")
+    def overdue(self, request):
+        denied = self._require_loan_dashboard_access(request)
+        if denied:
+            return denied
+        loans = self.filter_queryset(self.get_queryset()).filter(
+            Q(status="DEFAULTED")
+            | Q(status="DISBURSED", due_date__lt=date.today())
+        )
+        return Response(LoanSerializer(loans, many=True).data)
+
+    @action(detail=False, methods=["get"], url_path="due-soon")
+    def due_soon(self, request):
+        denied = self._require_loan_dashboard_access(request)
+        if denied:
+            return denied
+        today = date.today()
+        loans = self.filter_queryset(self.get_queryset()).filter(
+            status="DISBURSED",
+            due_date__gte=today,
+            due_date__lte=today + timedelta(days=7),
+        )
+        return Response(LoanSerializer(loans, many=True).data)
+
     @action(detail=False, methods=["get"], url_path="eligible-guarantors")
     def eligible_guarantors(self, request):
         group_id = request.query_params.get("group_id")
@@ -2036,7 +2223,7 @@ class LoanViewSet(viewsets.ModelViewSet):
             ]
         )
 
-    @action(detail=False, methods=["post"], url_path="apply")
+    @action(detail=False, methods=["post"], url_path="apply", url_name="apply")
     def apply_for_loan(self, request):
         serializer = LoanApplicationSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
@@ -2219,7 +2406,7 @@ class LoanViewSet(viewsets.ModelViewSet):
 
         return Response(self._serialize_loan(loan.id))
 
-    @action(detail=True, methods=["post"], url_path="approve")
+    @action(detail=True, methods=["post"], url_path="approve", url_name="approve")
     def approve_loan(self, request, pk=None):
         loan = self.get_object()
         if not self._is_loan_manager(request.user, loan):
@@ -2254,7 +2441,7 @@ class LoanViewSet(viewsets.ModelViewSet):
         )
         return Response(self._serialize_loan(loan.id))
 
-    @action(detail=True, methods=["post"], url_path="disburse")
+    @action(detail=True, methods=["post"], url_path="disburse", url_name="disburse")
     def disburse_loan(self, request, pk=None):
         loan = self.get_object()
         if not self._is_loan_manager(request.user, loan):
@@ -2267,8 +2454,6 @@ class LoanViewSet(viewsets.ModelViewSet):
                 {"detail": "Only approved loans can be disbursed."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-
-        from datetime import timedelta
 
         loan.status = "DISBURSED"
         loan.disbursed_at = timezone.now()
@@ -2311,7 +2496,7 @@ class LoanViewSet(viewsets.ModelViewSet):
             loan.save(update_fields=["balance_remaining", "status", "updated_at"])
         return loan
 
-    @action(detail=True, methods=["post"], url_path="repay")
+    @action(detail=True, methods=["post"], url_path="repay", url_name="repay")
     def make_repayment(self, request, pk=None):
         loan = self.get_object()
         is_manager = self._is_loan_manager(request.user, loan)

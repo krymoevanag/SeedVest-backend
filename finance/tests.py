@@ -1,6 +1,8 @@
 from datetime import date, timedelta
 from decimal import Decimal
 
+from django.utils import timezone
+
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -496,6 +498,58 @@ class AdminMemberFinancialOversightTests(APITestCase):
         self.assertEqual(filtered.status_code, status.HTTP_200_OK)
         self.assertEqual(len(filtered.data), 1)
         self.assertEqual(filtered.data[0]["id"], self.member_one_pending.id)
+
+    def test_admin_can_view_member_financial_profile_and_history(self):
+        profile = self.client.get(
+            reverse("member-financial-profile", args=[self.member_one.id])
+        )
+
+        self.assertEqual(profile.status_code, status.HTTP_200_OK)
+        self.assertEqual(float(profile.data["total_savings"]), 1000.0)
+        self.assertEqual(float(profile.data["outstanding_balance"]), 0.0)
+        self.assertEqual(float(profile.data["total_penalties"]), 120.0)
+
+        history = self.client.get(
+            reverse("member-savings-history", args=[self.member_one.id]),
+            {"type": "contribution"},
+        )
+        self.assertEqual(history.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(history.data), 2)
+        self.assertTrue(all(item["type"] == "contribution" for item in history.data))
+
+    def test_member_financial_profile_denies_other_member_access(self):
+        refresh = RefreshToken.for_user(self.member_one)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+        response = self.client.get(
+            reverse("member-financial-profile", args=[self.member_two.id])
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_admin_loan_dashboard_returns_scoped_metrics(self):
+        loan = Loan.objects.create(
+            user=self.member_one,
+            group=self.group,
+            amount=Decimal("2000.00"),
+            interest_rate=Decimal("5.00"),
+            duration_months=1,
+            status="DISBURSED",
+            disbursed_at=timezone.now(),
+            due_date=date.today() + timedelta(days=3),
+        )
+
+        response = self.client.get(reverse("loan-dashboard"))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["total_active_loans"], 1)
+        self.assertEqual(float(response.data["total_disbursed"]), 2000.0)
+        self.assertEqual(response.data["loans_due_this_week"], 1)
+        self.assertEqual(
+            self.client.get(reverse("loan-due-soon")).status_code,
+            status.HTTP_200_OK,
+        )
+        loan.refresh_from_db()
 
 
 class PenaltyEndpointTests(APITestCase):

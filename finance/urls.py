@@ -24,6 +24,8 @@ from .views import (
     GroupAnalyticsView,
     FinancialSecretaryReportView,
     LoanViewSet,
+    MemberFinancialProfileView,
+    MemberSavingsHistoryView,
 )
 
 # Create a DRF router and register the ViewSets
@@ -71,4 +73,14 @@ urlpatterns = [
     path("analytics/member/", MemberAnalyticsView.as_view(), name="analytics-member"),
     path("analytics/group/", GroupAnalyticsView.as_view(), name="analytics-group"),
     path("data-audit/", FinancialDataAuditView.as_view(), name="financial-data-audit"),
+    path(
+        "members/<int:member_id>/financial-profile/",
+        MemberFinancialProfileView.as_view(),
+        name="member-financial-profile",
+    ),
+    path(
+        "members/<int:member_id>/savings-history/",
+        MemberSavingsHistoryView.as_view(),
+        name="member-savings-history",
+    ),
 ]
