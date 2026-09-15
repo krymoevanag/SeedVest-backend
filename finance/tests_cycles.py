@@ -7,8 +7,10 @@ from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 
+from django.utils import timezone
 from groups.models import Group, Membership
-from finance.models import Contribution, FinancialCycle, MonthlyContributionRecord, Investment
+from finance.models import Contribution, FinancialCycle, MonthlyContributionRecord, Investment, Loan
+from finance.cycle_services import FinancialCycleService
 
 
 User = get_user_model()
@@ -286,3 +288,141 @@ class FinancialCycleFlowTests(APITestCase):
                 month=date(date.today().year + 1, 1, 1),
                 expected_contribution_amount=Decimal("500.00"),
             )
+
+    def test_rollover_contributions_creates_pending_contributions(self):
+        self.admin.is_superuser = True
+        self.admin.save()
+
+        cycle = FinancialCycle.objects.create(
+            group=self.group,
+            cycle_name=f"{date.today().year} Rollover Cycle",
+            start_date=date(date.today().year, 1, 1),
+            end_date=date(date.today().year, 12, 31),
+            status="ACTIVE",
+            created_by=self.admin,
+        )
+        FinancialCycleService.ensure_monthly_schedule(cycle)
+
+        # Clear outstanding amounts on other records so only one record is rolled over
+        MonthlyContributionRecord.objects.filter(financial_cycle=cycle).update(
+            actual_contribution_paid=Decimal("500.00"),
+            outstanding_amount=Decimal("0.00"),
+            status="PAID",
+        )
+
+        mcr = MonthlyContributionRecord.objects.get(
+            user=self.member,
+            financial_cycle=cycle,
+            month=date(date.today().year, 1, 1),
+        )
+        mcr.actual_contribution_paid = Decimal("200.00")
+        mcr.outstanding_amount = Decimal("300.00")
+        mcr.status = "PARTIAL"
+        mcr.save()
+
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(
+            reverse("financial-cycle-close", args=[cycle.id]),
+            {
+                "create_new_cycle": True,
+                "carry_forward_contributions": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["rollover_summary"]["contributions_rolled"], 1)
+
+        new_cycle_id = response.data["new_cycle"]["id"]
+        rolled_contrib = Contribution.objects.filter(
+            financial_cycle_id=new_cycle_id,
+            is_rollover=True,
+        ).first()
+        self.assertIsNotNone(rolled_contrib)
+        self.assertEqual(rolled_contrib.status, "PENDING")
+        self.assertEqual(rolled_contrib.amount, Decimal("300.00"))
+        self.assertEqual(rolled_contrib.rollover_source_cycle, cycle)
+
+    def test_rollover_loans_relinks_to_new_cycle(self):
+        self.admin.is_superuser = True
+        self.admin.save()
+
+        cycle = FinancialCycle.objects.create(
+            group=self.group,
+            cycle_name=f"{date.today().year} Loan Rollover",
+            start_date=date(date.today().year, 1, 1),
+            end_date=date(date.today().year, 12, 31),
+            status="ACTIVE",
+            created_by=self.admin,
+        )
+        loan = Loan.objects.create(
+            user=self.member,
+            group=self.group,
+            financial_cycle=cycle,
+            amount=Decimal("5000.00"),
+            interest_rate=Decimal("10.00"),
+            duration_months=3,
+            status="DISBURSED",
+            disbursed_at=timezone.now(),
+            due_date=date(date.today().year, 6, 1),
+            balance_remaining=Decimal("3000.00"),
+        )
+
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(
+            reverse("financial-cycle-close", args=[cycle.id]),
+            {
+                "create_new_cycle": True,
+                "carry_forward_loans": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["rollover_summary"]["loans_relinked"], 1)
+        loan.refresh_from_db()
+        new_cycle_id = response.data["new_cycle"]["id"]
+        self.assertEqual(loan.financial_cycle_id, new_cycle_id)
+
+    def test_rollover_flags_ignored_for_non_superuser(self):
+        self.admin.is_superuser = False
+        self.admin.save()
+
+        cycle = FinancialCycle.objects.create(
+            group=self.group,
+            cycle_name=f"{date.today().year} Non-Super Cycle",
+            start_date=date(date.today().year, 1, 1),
+            end_date=date(date.today().year, 12, 31),
+            status="ACTIVE",
+            created_by=self.admin,
+        )
+        FinancialCycleService.ensure_monthly_schedule(cycle)
+
+        mcr = MonthlyContributionRecord.objects.get(
+            user=self.member,
+            financial_cycle=cycle,
+            month=date(date.today().year, 1, 1),
+        )
+        mcr.actual_contribution_paid = Decimal("100.00")
+        mcr.outstanding_amount = Decimal("400.00")
+        mcr.status = "PARTIAL"
+        mcr.save()
+
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(
+            reverse("financial-cycle-close", args=[cycle.id]),
+            {
+                "create_new_cycle": True,
+                "carry_forward_contributions": True,
+                "carry_forward_loans": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["rollover_summary"]["contributions_rolled"], 0)
+        self.assertEqual(response.data["rollover_summary"]["loans_relinked"], 0)
+        new_cycle_id = response.data["new_cycle"]["id"]
+        self.assertFalse(
+            Contribution.objects.filter(financial_cycle_id=new_cycle_id, is_rollover=True).exists()
+        )

@@ -315,6 +315,14 @@ class Contribution(models.Model):
     is_locked = models.BooleanField(default=False)
     locked_at = models.DateTimeField(null=True, blank=True)
     is_archived = models.BooleanField(default=False)
+    is_rollover = models.BooleanField(default=False)
+    rollover_source_cycle = models.ForeignKey(
+        "FinancialCycle",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="rollover_contributions",
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
 

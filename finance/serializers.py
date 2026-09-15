@@ -383,7 +383,31 @@ class FinancialCycleTransitionSerializer(serializers.Serializer):
     cycle_name = serializers.CharField(required=False, allow_blank=True, max_length=120)
     archive_closed_cycle = serializers.BooleanField(required=False, default=True)
     create_new_cycle = serializers.BooleanField(required=False, default=True)
+
+    # Granular rollover switches (superuser-only; ignored for non-superusers in the view)
+    carry_forward_contributions = serializers.BooleanField(required=False, default=False)
+    carry_forward_missed = serializers.BooleanField(required=False, default=False)
+    carry_forward_loans = serializers.BooleanField(required=False, default=False)
+
+    # Deprecated: kept for backwards-compatibility; maps to carry_forward_contributions
     carry_forward_balances = serializers.BooleanField(required=False, default=False)
+
+    def validate(self, data):
+        # Apply deprecated alias before mutual-exclusion check
+        if data.get("carry_forward_balances") and not data.get("carry_forward_contributions"):
+            data["carry_forward_contributions"] = True
+
+        # Mutual exclusion: only one contribution-rollover mode at a time
+        if data.get("carry_forward_contributions") and data.get("carry_forward_missed"):
+            raise serializers.ValidationError(
+                {
+                    "carry_forward_missed": (
+                        "carry_forward_contributions and carry_forward_missed are mutually "
+                        "exclusive. Choose one contribution rollover mode."
+                    )
+                }
+            )
+        return data
 
 
 class CycleClosureReportSerializer(serializers.ModelSerializer):

@@ -1100,6 +1100,12 @@ class FinancialCycleViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
 
+        # Rollover flags are only honoured for superusers
+        is_superuser = request.user.is_superuser
+        carry_forward_contributions = is_superuser and payload.get("carry_forward_contributions", False)
+        carry_forward_missed = is_superuser and payload.get("carry_forward_missed", False)
+        carry_forward_loans = is_superuser and payload.get("carry_forward_loans", False)
+
         try:
             result = FinancialCycleService.close_cycle(
                 cycle,
@@ -1107,7 +1113,9 @@ class FinancialCycleViewSet(viewsets.ModelViewSet):
                 cycle_name=payload.get("cycle_name", ""),
                 archive_closed_cycle=payload.get("archive_closed_cycle", True),
                 create_new_cycle=payload.get("create_new_cycle", True),
-                carry_forward_balances=payload.get("carry_forward_balances", False),
+                carry_forward_contributions=carry_forward_contributions,
+                carry_forward_missed=carry_forward_missed,
+                carry_forward_loans=carry_forward_loans,
             )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -1137,9 +1145,10 @@ class FinancialCycleViewSet(viewsets.ModelViewSet):
                 else None
             ),
             "annual_summary": CycleClosureReportSerializer(report).data,
-            "carry_forward_balances": result["carry_forward_balances"],
+            "rollover_summary": result["rollover_summary"],
         }
         return Response(response_data, status=status.HTTP_200_OK)
+
 
 
 class MonthlyContributionReportViewSet(viewsets.ReadOnlyModelViewSet):

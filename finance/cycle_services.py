@@ -11,6 +11,7 @@ from .models import (
     CycleClosureReport,
     FinancialCycle,
     Investment,
+    Loan,
     MonthlyContributionRecord,
 )
 
@@ -124,9 +125,26 @@ class FinancialCycleService:
         return monthly
 
     @staticmethod
-    def close_cycle(cycle, actor, *, cycle_name="", archive_closed_cycle=True, create_new_cycle=True, carry_forward_balances=False):
+    def close_cycle(
+        cycle,
+        actor,
+        *,
+        cycle_name="",
+        archive_closed_cycle=True,
+        create_new_cycle=True,
+        # Granular rollover flags (superuser-only; caller is responsible for gating)
+        carry_forward_contributions=False,
+        carry_forward_missed=False,
+        carry_forward_loans=False,
+        # Deprecated alias — mapped to carry_forward_contributions by the serializer
+        carry_forward_balances=False,
+    ):
         if cycle.status != "ACTIVE":
             raise ValueError("Only active cycles can be closed.")
+
+        # Resolve deprecated alias
+        if carry_forward_balances and not carry_forward_contributions:
+            carry_forward_contributions = True
 
         with transaction.atomic():
             now = timezone.now()
@@ -252,12 +270,116 @@ class FinancialCycleService:
                 )
                 FinancialCycleService.ensure_monthly_schedule(new_cycle)
 
+            # --- Rollover operations (run after new cycle exists) ---
+            rollover_summary = {
+                "contributions_rolled": 0,
+                "missed_rolled": 0,
+                "loans_relinked": 0,
+            }
+
+            if new_cycle:
+                if carry_forward_contributions:
+                    rollover_summary["contributions_rolled"] = (
+                        FinancialCycleService._rollover_contributions(cycle, new_cycle, actor)
+                    )
+                elif carry_forward_missed:
+                    rollover_summary["missed_rolled"] = (
+                        FinancialCycleService._rollover_missed(cycle, new_cycle, actor)
+                    )
+
+                if carry_forward_loans:
+                    rollover_summary["loans_relinked"] = (
+                        FinancialCycleService._rollover_loans(cycle, new_cycle)
+                    )
+
             return {
                 "closed_cycle": cycle,
                 "new_cycle": new_cycle,
                 "report": report,
-                "carry_forward_balances": carry_forward_balances,
+                "rollover_summary": rollover_summary,
             }
+
+    # ------------------------------------------------------------------
+    # Rollover helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _rollover_contributions(old_cycle, new_cycle, actor):
+        """Create a PENDING Contribution in new_cycle for every MCR with
+        outstanding_amount > 0 from old_cycle.  Returns the count created."""
+        outstanding_records = MonthlyContributionRecord.objects.filter(
+            financial_cycle=old_cycle,
+            outstanding_amount__gt=Decimal("0.00"),
+        ).select_related("user", "group")
+
+        created = 0
+        for record in outstanding_records:
+            contrib = Contribution.objects.create(
+                user=record.user,
+                group=record.group,
+                financial_cycle=new_cycle,
+                contribution_month=new_cycle.start_date.replace(day=1),
+                amount=record.outstanding_amount,
+                expected_amount=record.outstanding_amount,
+                due_date=new_cycle.start_date,
+                status="PENDING",
+                is_manual_entry=True,
+                reported_note=(
+                    f"Rolled over from {old_cycle.cycle_name}: "
+                    f"{record.month.strftime('%b %Y')} outstanding balance."
+                ),
+                is_rollover=True,
+                rollover_source_cycle=old_cycle,
+            )
+            FinancialCycleService.sync_monthly_record_from_contribution(contrib)
+            created += 1
+
+        return created
+
+    @staticmethod
+    def _rollover_missed(old_cycle, new_cycle, actor):
+        """Create an OVERDUE Contribution in new_cycle for every MCR where
+        actual_contribution_paid < expected_contribution_amount.  Returns count."""
+        missed_records = MonthlyContributionRecord.objects.filter(
+            financial_cycle=old_cycle,
+            outstanding_amount__gt=Decimal("0.00"),
+        ).select_related("user", "group")
+
+        created = 0
+        for record in missed_records:
+            contrib = Contribution.objects.create(
+                user=record.user,
+                group=record.group,
+                financial_cycle=new_cycle,
+                contribution_month=record.month,
+                amount=record.outstanding_amount,
+                expected_amount=record.outstanding_amount,
+                due_date=new_cycle.start_date,
+                status="OVERDUE",
+                is_manual_entry=True,
+                reported_note=(
+                    f"Missed/partial payment rolled over from {old_cycle.cycle_name}: "
+                    f"{record.month.strftime('%b %Y')}."
+                ),
+                is_rollover=True,
+                rollover_source_cycle=old_cycle,
+            )
+            FinancialCycleService.sync_monthly_record_from_contribution(contrib)
+            created += 1
+
+        return created
+
+    @staticmethod
+    def _rollover_loans(old_cycle, new_cycle):
+        """Re-link active loans with a remaining balance to new_cycle.
+        Returns the number of loans updated."""
+        count = Loan.objects.filter(
+            financial_cycle=old_cycle,
+            status__in=("DISBURSED", "APPROVED"),
+            balance_remaining__gt=Decimal("0.00"),
+            is_archived=False,
+        ).update(financial_cycle=new_cycle)
+        return count
 
 
 class FinancialDataAuditService:
