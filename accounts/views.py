@@ -53,6 +53,8 @@ from .serializers import (
 from .models import User, AuditLog
 from .tokens import account_activation_token
 from .url_utils import build_backend_url, build_frontend_url
+from notifications.constants import NotificationType
+from notifications.service import NotificationService
 
 
 # ====================================================
@@ -61,6 +63,43 @@ from .url_utils import build_backend_url, build_frontend_url
 User = get_user_model()
 token_generator = PasswordResetTokenGenerator()
 logger = logging.getLogger(__name__)
+
+
+def notify_password_reset_admins(*, user, event):
+    """Notify each active admin/superuser once about a password reset event."""
+    admins = User.objects.filter(
+        Q(is_superuser=True) | Q(role__in=["ADMIN", "TREASURER"]),
+        is_active=True,
+    ).distinct()
+    member_name = f"{user.first_name} {user.last_name}".strip() or user.membership_number or "Member"
+
+    if event == "requested":
+        title = "Password Reset Request (No Email)" if not user.email else "Password Reset Request"
+        message = (
+            f"{member_name} (ID: {user.membership_number or user.id}, "
+            f"Email: {user.email or 'N/A'}, Phone: {user.phone_number or 'N/A'}) "
+            "requested a password reset."
+        )
+        notification_level = "WARNING"
+    else:
+        title = "Password Reset Completed"
+        message = (
+            f"The password reset for {member_name} "
+            f"(ID: {user.membership_number or user.id}) has been completed."
+        )
+        notification_level = "SUCCESS"
+
+    for admin in admins:
+        NotificationService.send(
+            recipient=admin,
+            title=title,
+            message=message,
+            category="SYSTEM",
+            notification_level=notification_level,
+            notification_type=NotificationType.PASSWORD_RESET,
+            link="/governance/members",
+            channels=("in_app", "push"),
+        )
 
 
 def cleanup_unmanaged_user_foreign_keys(user_id):
@@ -802,25 +841,10 @@ class PasswordResetRequestView(APIView):
                 status=status.HTTP_200_OK,
             )
 
+        notify_password_reset_admins(user=user, event="requested")
+
         # If user has no email address:
         if not user.email:
-            from notifications.constants import NotificationType
-            from notifications.service import NotificationService
-
-            admins = User.objects.filter(role__in=["ADMIN", "TREASURER"], is_active=True)
-            member_name = f"{user.first_name} {user.last_name}".strip() or user.membership_number or "Member"
-            for admin in admins:
-                NotificationService.send(
-                    recipient=admin,
-                    title="Password Reset Request (No Email)",
-                    message=f"{member_name} (ID: {user.membership_number or user.id}, Phone: {user.phone_number or 'N/A'}) requested a password reset but has no registered email.",
-                    category="SYSTEM",
-                    notification_level="WARNING",
-                    notification_type=NotificationType.SECURITY_ALERT,
-                    link="/governance/members",
-                    channels=("in_app", "push"),
-                )
-
             return Response(
                 {
                     "detail": f"Account found ({user.membership_number or 'Member'}). This account has no registered email address. A notification has been sent to group administrators. Please contact your admin or treasurer to receive your new password.",
@@ -905,6 +929,8 @@ class PasswordResetConfirmView(APIView):
             update_fields.append("is_active")
 
         user.save(update_fields=update_fields)
+
+        notify_password_reset_admins(user=user, event="completed")
 
         return Response(
             {"detail": "Password reset successful."},

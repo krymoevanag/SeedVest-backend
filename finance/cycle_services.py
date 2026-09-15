@@ -230,6 +230,11 @@ class FinancialCycleService:
                 cycle.archived_at = now
                 cycle.save(update_fields=["status", "archived_at", "updated_at"])
                 monthly_rows.update(is_archived=True)
+                Contribution.objects.filter(financial_cycle=cycle).update(is_archived=True)
+                Investment.objects.filter(financial_cycle=cycle).update(is_archived=True)
+                # Penalties linked to a contribution in this cycle
+                from finance.models import Penalty
+                Penalty.objects.filter(contribution__financial_cycle=cycle).update(is_archived=True)
 
             new_cycle = None
             if create_new_cycle:

@@ -704,6 +704,16 @@ class PasswordResetTests(APITestCase):
 
     @patch("accounts.views.send_password_reset_email", return_value=True)
     def test_password_reset_request_existing_user_returns_200(self, mock_send):
+        admin = User.objects.create_user(
+            email="request_admin@test.com",
+            password="AdminPassword123!",
+            role="ADMIN",
+            is_active=True,
+        )
+        superuser = User.objects.create_superuser(
+            email="request_superuser@test.com",
+            password="SuperPassword123!",
+        )
         url = reverse("password-reset")
         response = self.client.post(
             url,
@@ -713,6 +723,13 @@ class PasswordResetTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn("detail", response.data)
         mock_send.assert_called_once()
+        self.assertEqual(
+            Notification.objects.filter(
+                recipient__in=[admin, superuser],
+                title="Password Reset Request",
+            ).count(),
+            2,
+        )
 
     def test_password_reset_request_unknown_user_returns_200(self):
         url = reverse("password-reset")
@@ -725,6 +742,16 @@ class PasswordResetTests(APITestCase):
         self.assertIn("detail", response.data)
 
     def test_password_reset_confirm_updates_password(self):
+        admin = User.objects.create_user(
+            email="complete_admin@test.com",
+            password="AdminPassword123!",
+            role="ADMIN",
+            is_active=True,
+        )
+        superuser = User.objects.create_superuser(
+            email="complete_superuser@test.com",
+            password="SuperPassword123!",
+        )
         uid = urlsafe_base64_encode(force_bytes(self.user.pk))
         token = PasswordResetTokenGenerator().make_token(self.user)
 
@@ -740,6 +767,13 @@ class PasswordResetTests(APITestCase):
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            Notification.objects.filter(
+                recipient__in=[admin, superuser],
+                title="Password Reset Completed",
+            ).count(),
+            2,
+        )
 
         login_response = self.client.post(
             reverse("login"),

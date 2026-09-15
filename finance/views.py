@@ -117,12 +117,24 @@ class ContributionViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        queryset = Contribution.objects.select_related(
-            "user",
-            "group",
-            "financial_cycle",
-            "reviewed_by",
-        ).filter(is_archived=False)
+        cycle_id = self.request.query_params.get("cycle_id")
+
+        # When a specific cycle is requested, include archived contributions so
+        # historical (CLOSED/ARCHIVED) cycles can be queried for past records.
+        if cycle_id:
+            queryset = Contribution.objects.select_related(
+                "user",
+                "group",
+                "financial_cycle",
+                "reviewed_by",
+            ).filter(financial_cycle_id=cycle_id)
+        else:
+            queryset = Contribution.objects.select_related(
+                "user",
+                "group",
+                "financial_cycle",
+                "reviewed_by",
+            ).filter(is_archived=False)
 
         if not user.is_superuser and user.role != "ADMIN":
             if user.role == "TREASURER":
@@ -139,9 +151,7 @@ class ContributionViewSet(viewsets.ModelViewSet):
         if group_id:
             queryset = queryset.filter(group_id=group_id)
 
-        cycle_id = self.request.query_params.get("cycle_id")
-        if cycle_id:
-            queryset = queryset.filter(financial_cycle_id=cycle_id)
+        # cycle_id is already applied as the base queryset filter above
 
         member_id = self.request.query_params.get("user_id")
         if member_id:
@@ -1138,7 +1148,17 @@ class MonthlyContributionReportViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        queryset = MonthlyContributionRecord.objects.filter(is_archived=False).select_related(
+        params = self.request.query_params
+        cycle_id = params.get("cycle_id")
+
+        # When a specific cycle is requested, include archived records so
+        # historical (CLOSED/ARCHIVED) cycles can be queried for past data.
+        if cycle_id:
+            base_filter = Q(financial_cycle_id=cycle_id)
+        else:
+            base_filter = Q(is_archived=False)
+
+        queryset = MonthlyContributionRecord.objects.filter(base_filter).select_related(
             "user", "group", "financial_cycle", "source_contribution"
         )
 
@@ -1152,11 +1172,8 @@ class MonthlyContributionReportViewSet(viewsets.ReadOnlyModelViewSet):
         else:
             scoped = queryset.filter(user=user)
 
-        params = self.request.query_params
         if params.get("group_id"):
             scoped = scoped.filter(group_id=params.get("group_id"))
-        if params.get("cycle_id"):
-            scoped = scoped.filter(financial_cycle_id=params.get("cycle_id"))
         if params.get("member_id"):
             scoped = scoped.filter(user_id=params.get("member_id"))
         if params.get("status"):
@@ -1461,23 +1478,35 @@ class AdminMemberListView(ListAPIView):
 
         cycle_id = self.request.query_params.get("cycle_id")
 
-        contribution_filter = Q(
-            user_id=OuterRef("user_id"),
-            group_id=OuterRef("group_id"),
-            is_archived=False,
-        )
+        # When viewing a specific historical cycle, include archived records
+        # so that closed/archived cycle data is visible in member cards.
         if cycle_id:
-            contribution_filter &= Q(financial_cycle_id=cycle_id)
+            contribution_filter = Q(
+                user_id=OuterRef("user_id"),
+                group_id=OuterRef("group_id"),
+                financial_cycle_id=cycle_id,
+            )
+        else:
+            contribution_filter = Q(
+                user_id=OuterRef("user_id"),
+                group_id=OuterRef("group_id"),
+                is_archived=False,
+            )
         scoped_contributions = Contribution.objects.filter(contribution_filter)
 
-        scoped_penalties_filter = Q(
-            user_id=OuterRef("user_id"),
-            is_archived=False,
-            contribution__group_id=OuterRef("group_id"),
-            contribution__is_archived=False,
-        )
         if cycle_id:
-            scoped_penalties_filter &= Q(contribution__financial_cycle_id=cycle_id)
+            scoped_penalties_filter = Q(
+                user_id=OuterRef("user_id"),
+                contribution__group_id=OuterRef("group_id"),
+                contribution__financial_cycle_id=cycle_id,
+            )
+        else:
+            scoped_penalties_filter = Q(
+                user_id=OuterRef("user_id"),
+                is_archived=False,
+                contribution__group_id=OuterRef("group_id"),
+                contribution__is_archived=False,
+            )
         scoped_penalties = Penalty.objects.filter(scoped_penalties_filter)
 
         expected_amount_expr = Case(
@@ -2030,8 +2059,7 @@ class FinancialSecretaryReportView(APIView):
             "monthly_summaries": monthly_trends,
         }
         
-        serializer = FinancialSecretaryReportSerializer(data)
-        return Response(serializer.data)
+        return Response(data)
 
 
 
