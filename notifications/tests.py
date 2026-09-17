@@ -399,3 +399,122 @@ class NotificationPreferencesAndProposalTests(APITestCase):
                 title="Contribution Proposal Submitted",
             ).exists()
         )
+
+    def test_superuser_can_send_direct_notification_to_individual(self):
+        superuser = User.objects.create_superuser(
+            email="super@seedvest.com",
+            password="pass123",
+            first_name="Super",
+            last_name="User",
+        )
+        self.client.force_authenticate(user=superuser)
+
+        url = reverse("notification-list")
+        payload = {
+            "recipient": self.member.id,
+            "title": "Direct Alert",
+            "message": "Please review your documents.",
+            "type": "WARNING",
+            "category": "INTERNAL",
+        }
+        response = self.client.post(url, payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["title"], "Direct Alert")
+        self.assertTrue(
+            Notification.objects.filter(
+                recipient=self.member,
+                title="Direct Alert",
+                type="WARNING",
+            ).exists()
+        )
+
+    def test_superuser_can_send_broadcast_to_all_users(self):
+        superuser = User.objects.create_superuser(
+            email="super2@seedvest.com",
+            password="pass123",
+            first_name="Super2",
+            last_name="User",
+        )
+        self.client.force_authenticate(user=superuser)
+
+        url = reverse("notification-broadcast")
+        payload = {
+            "title": "System Maintenance",
+            "message": "Maintenance scheduled tonight.",
+            "target_role": "ALL",
+        }
+        response = self.client.post(url, payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(
+            Notification.objects.filter(
+                recipient=self.member,
+                title="System Maintenance",
+            ).exists()
+        )
+        self.assertTrue(
+            Notification.objects.filter(
+                recipient=self.admin,
+                title="System Maintenance",
+            ).exists()
+        )
+
+    def test_admin_can_send_broadcast_to_specific_recipients(self):
+        other_member = User.objects.create_user(
+            email="other-member@seedvest.com",
+            password="pass123",
+            role="MEMBER",
+            is_active=True,
+            is_approved=True,
+        )
+        self.client.force_authenticate(user=self.admin)
+
+        url = reverse("notification-broadcast")
+        payload = {
+            "title": "Exclusive Alert",
+            "message": "Only for specific members.",
+            "recipient_ids": [self.member.id],
+        }
+        response = self.client.post(url, payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(
+            Notification.objects.filter(
+                recipient=self.member,
+                title="Exclusive Alert",
+            ).exists()
+        )
+        self.assertFalse(
+            Notification.objects.filter(
+                recipient=other_member,
+                title="Exclusive Alert",
+            ).exists()
+        )
+
+    def test_regular_member_cannot_send_direct_notification_or_broadcast(self):
+        self.client.force_authenticate(user=self.member)
+
+        # Attempt create
+        response_create = self.client.post(
+            reverse("notification-list"),
+            {
+                "recipient": self.admin.id,
+                "title": "Unauthorized",
+                "message": "Should fail",
+            },
+            format="json",
+        )
+        self.assertEqual(response_create.status_code, status.HTTP_403_FORBIDDEN)
+
+        # Attempt broadcast
+        response_broadcast = self.client.post(
+            reverse("notification-broadcast"),
+            {
+                "title": "Unauthorized Broadcast",
+                "message": "Should fail",
+            },
+            format="json",
+        )
+        self.assertEqual(response_broadcast.status_code, status.HTTP_403_FORBIDDEN)
+

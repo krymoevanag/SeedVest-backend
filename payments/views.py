@@ -8,6 +8,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import AllowAny
+from django.conf import settings
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse
 from .models import MpesaTransaction
@@ -206,7 +207,8 @@ class MpesaTransactionStatusView(APIView):
                 "amount": transaction.amount,
                 "receipt": transaction.mpesa_receipt_number,
                 "description": transaction.result_desc,
-                "created_at": transaction.created_at
+                "created_at": transaction.created_at,
+                "is_test_mode": getattr(settings, "MPESA_TEST_MODE", True),
             })
         except MpesaTransaction.DoesNotExist:
             return Response({"error": "Transaction not found"}, status=status.HTTP_404_NOT_FOUND)

@@ -3,10 +3,16 @@ from .models import Notification, NotificationPreference, UserDevice
 
 
 class NotificationSerializer(serializers.ModelSerializer):
+    recipient_email = serializers.EmailField(source="recipient.email", read_only=True)
+    recipient_name = serializers.CharField(source="recipient.get_full_name", read_only=True)
+
     class Meta:
         model = Notification
         fields = (
             "id",
+            "recipient",
+            "recipient_email",
+            "recipient_name",
             "title",
             "message",
             "category",
@@ -16,7 +22,7 @@ class NotificationSerializer(serializers.ModelSerializer):
             "is_read",
             "created_at",
         )
-        read_only_fields = ("id", "created_at")
+        read_only_fields = ("id", "created_at", "recipient_email", "recipient_name")
 
 
 class NotificationPreferenceSerializer(serializers.ModelSerializer):

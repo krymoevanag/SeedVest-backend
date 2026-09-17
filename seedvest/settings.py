@@ -279,6 +279,7 @@ MPESA_CONSUMER_SECRET = os.getenv("MPESA_CONSUMER_SECRET")
 MPESA_SHORTCODE = os.getenv("MPESA_SHORTCODE")
 MPESA_PASSKEY = os.getenv("MPESA_PASSKEY")
 MPESA_CALLBACK_URL = os.getenv("MPESA_CALLBACK_URL")
+MPESA_TEST_MODE = os.getenv("MPESA_TEST_MODE", "True").strip().lower() in ("true", "1", "yes")
 
 FRONTEND_URL = os.getenv("FRONTEND_URL", "seedvest://")
 BACKEND_URL = os.getenv(

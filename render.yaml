@@ -35,6 +35,8 @@ services:
         sync: false
       - key: MPESA_CALLBACK_URL
         value: https://seedvest-api.onrender.com/api/payments/mpesa/callback/
+      - key: MPESA_TEST_MODE
+        value: "True"
       - key: EMAIL_PROVIDER
         value: resend
       - key: RESEND_API_KEY

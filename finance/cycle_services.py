@@ -72,6 +72,7 @@ class FinancialCycleService:
                     financial_cycle=cycle,
                     contribution_month=month,
                     is_archived=False,
+                    status__in=("PAID", "LATE"),
                 )
                 .exclude(pk=contribution.pk)
                 .order_by("-paid_date", "-created_at", "-id")

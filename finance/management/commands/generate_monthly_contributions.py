@@ -102,7 +102,7 @@ class Command(BaseCommand):
                     generated_for_month=target_date,
                 )
 
-                NotificationService.send_after_commit(
+                NotificationService.send(
                     recipient=config.user,
                     notification_level="SUCCESS",
                     notification_type=NotificationType.CONTRIBUTION_REMINDER,

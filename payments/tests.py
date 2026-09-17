@@ -1,4 +1,4 @@
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from unittest.mock import patch
 from .models import MpesaTransaction
@@ -221,3 +221,183 @@ class MpesaCallbackTests(TestCase):
         self.assertEqual(response.status_code, 200)
         transaction.refresh_from_db()
         self.assertEqual(transaction.status, "PENDING")
+
+    @override_settings(MPESA_TEST_MODE=True)
+    def test_callback_in_test_mode_does_not_approve_linked_contribution(self):
+        from finance.models import Contribution
+        from groups.models import Group
+        from django.utils import timezone
+
+        group = Group.objects.create(name="Test Group", treasurer=self.user)
+        contribution = Contribution.objects.create(
+            user=self.user,
+            group=group,
+            amount=500,
+            status="PENDING",
+            due_date=timezone.now().date(),
+        )
+
+        transaction = MpesaTransaction.objects.create(
+            checkout_request_id="ws_CO_test_mode_linked",
+            merchant_request_id="merchant-test-mode-linked",
+            amount=500,
+            phone_number="254708873060",
+            status="PENDING",
+            user=self.user,
+            group=group,
+            contribution=contribution,
+        )
+
+        callback_data = {
+            "Body": {
+                "stkCallback": {
+                    "MerchantRequestID": transaction.merchant_request_id,
+                    "CheckoutRequestID": transaction.checkout_request_id,
+                    "ResultCode": 0,
+                    "ResultDesc": "Success",
+                    "CallbackMetadata": {
+                        "Item": [
+                            {"Name": "Amount", "Value": 500},
+                            {"Name": "MpesaReceiptNumber", "Value": "TESTRECEIPT01"},
+                        ]
+                    },
+                }
+            }
+        }
+
+        response = self.client.post(
+            self.callback_url,
+            data=json.dumps(callback_data),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+
+        transaction.refresh_from_db()
+        self.assertEqual(transaction.status, "SUCCESS")
+
+        # Crucial verification: Contribution must remain PENDING and NOT PAID
+        contribution.refresh_from_db()
+        self.assertEqual(contribution.status, "PENDING")
+        self.assertIn("[TEST MODE]", contribution.reported_note)
+        self.assertEqual(contribution.reported_reference, "TESTRECEIPT01")
+
+        # Verify it does NOT count as an approved / paid contribution
+        paid_contributions = Contribution.objects.filter(
+            group=group, status__in=["PAID", "LATE"]
+        )
+        self.assertEqual(paid_contributions.count(), 0)
+
+    @override_settings(MPESA_TEST_MODE=True)
+    def test_callback_in_test_mode_creates_pending_not_approved_for_adhoc(self):
+        from finance.models import Contribution
+        from groups.models import Group
+
+        group = Group.objects.create(name="Test Group 2", treasurer=self.user)
+        transaction = MpesaTransaction.objects.create(
+            checkout_request_id="ws_CO_test_mode_adhoc",
+            merchant_request_id="merchant-test-mode-adhoc",
+            amount=300,
+            phone_number="254708873060",
+            status="PENDING",
+            user=self.user,
+            group=group,
+        )
+
+        callback_data = {
+            "Body": {
+                "stkCallback": {
+                    "MerchantRequestID": transaction.merchant_request_id,
+                    "CheckoutRequestID": transaction.checkout_request_id,
+                    "ResultCode": 0,
+                    "ResultDesc": "Success",
+                    "CallbackMetadata": {
+                        "Item": [
+                            {"Name": "Amount", "Value": 300},
+                            {"Name": "MpesaReceiptNumber", "Value": "TESTRECEIPT02"},
+                        ]
+                    },
+                }
+            }
+        }
+
+        response = self.client.post(
+            self.callback_url,
+            data=json.dumps(callback_data),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+
+        # Adhoc payment in test mode creates PENDING manual entry, NOT PAID
+        created_contribution = Contribution.objects.filter(
+            group=group, user=self.user
+        ).first()
+        self.assertIsNotNone(created_contribution)
+        self.assertEqual(created_contribution.status, "PENDING")
+        self.assertTrue(created_contribution.is_manual_entry)
+        self.assertIn("[TEST MODE]", created_contribution.reported_note)
+
+        # Ensure approved contributions count is 0
+        self.assertEqual(
+            Contribution.objects.filter(group=group, status__in=["PAID", "LATE"]).count(),
+            0,
+        )
+
+    @override_settings(MPESA_TEST_MODE=False)
+    def test_callback_in_live_mode_marks_contribution_paid(self):
+        from finance.models import Contribution
+        from groups.models import Group
+        from django.utils import timezone
+
+        group = Group.objects.create(name="Live Group", treasurer=self.user)
+        contribution = Contribution.objects.create(
+            user=self.user,
+            group=group,
+            amount=1000,
+            status="PENDING",
+            due_date=timezone.now().date(),
+        )
+
+        transaction = MpesaTransaction.objects.create(
+            checkout_request_id="ws_CO_live_mode",
+            merchant_request_id="merchant-live-mode",
+            amount=1000,
+            phone_number="254708873060",
+            status="PENDING",
+            user=self.user,
+            group=group,
+            contribution=contribution,
+        )
+
+        callback_data = {
+            "Body": {
+                "stkCallback": {
+                    "MerchantRequestID": transaction.merchant_request_id,
+                    "CheckoutRequestID": transaction.checkout_request_id,
+                    "ResultCode": 0,
+                    "ResultDesc": "Success",
+                    "CallbackMetadata": {
+                        "Item": [
+                            {"Name": "Amount", "Value": 1000},
+                            {"Name": "MpesaReceiptNumber", "Value": "LIVERECEIPT01"},
+                        ]
+                    },
+                }
+            }
+        }
+
+        response = self.client.post(
+            self.callback_url,
+            data=json.dumps(callback_data),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+
+        # Live mode marks as PAID
+        contribution.refresh_from_db()
+        self.assertEqual(contribution.status, "PAID")
+        self.assertEqual(contribution.paid_date, timezone.now().date())
+        self.assertEqual(
+            Contribution.objects.filter(group=group, status__in=["PAID", "LATE"]).count(),
+            1,
+        )
+
