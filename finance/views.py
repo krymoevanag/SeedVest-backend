@@ -1725,8 +1725,9 @@ class MemberSavingsHistoryView(APIView):
 class AdminGroupSummaryView(APIView):
     """
     Returns summary statistics for a specific group.
+    Accessible to admins, treasurers, and members of that group.
     """
-    permission_classes = [IsAuthenticated, IsTreasurerOrAdminOrFinancialSecretaryReadOnly]
+    permission_classes = [IsAuthenticated, IsApprovedUser]
 
     def get(self, request):
         user = request.user
@@ -1741,14 +1742,15 @@ class AdminGroupSummaryView(APIView):
         except Group.DoesNotExist:
             return Response({"detail": "Group not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        # Permission check
-        if not user.is_superuser and user.role != "ADMIN":
-            if user.role == "TREASURER" and group.treasurer_id != user.id:
-                return Response({"detail": "Access denied."}, status=status.HTTP_403_FORBIDDEN)
-            if user.role == "FINANCIAL_SECRETARY" and not group.memberships.filter(user=user).exists():
-                return Response({"detail": "Access denied."}, status=status.HTTP_403_FORBIDDEN)
-            if user.role == "MEMBER":
-                 return Response({"detail": "Access denied."}, status=status.HTTP_403_FORBIDDEN)
+        # Permission check: Admins, group's treasurer, or any member of the group
+        is_admin_or_treasurer = (
+            user.is_superuser
+            or user.role == "ADMIN"
+            or (user.role == "TREASURER" and group.treasurer_id == user.id)
+        )
+        is_group_member = group.memberships.filter(user=user).exists()
+        if not is_admin_or_treasurer and not is_group_member:
+            return Response({"detail": "Access denied. You are not a member of this group."}, status=status.HTTP_403_FORBIDDEN)
 
         memberships = Membership.objects.filter(group=group)
 
@@ -1764,12 +1766,42 @@ class AdminGroupSummaryView(APIView):
         if cycle_id:
             penalties = penalties.filter(contribution__financial_cycle_id=cycle_id)
 
+        total_savings = contributions.filter(status__in=["PAID", "LATE"]).aggregate(
+            total=Sum("amount")
+        )["total"] or Decimal("0.00")
+
+        total_penalties = penalties.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+
+        loans_disbursed = Loan.objects.filter(
+            group=group,
+            status__in=["DISBURSED", "REPAID"],
+            is_archived=False,
+        ).aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+
+        loans_repaid = LoanRepayment.objects.filter(
+            loan__group=group,
+            status="VERIFIED",
+        ).aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+
+        active_loans_balance = Loan.objects.filter(
+            group=group,
+            status="DISBURSED",
+            is_archived=False,
+        ).aggregate(total=Sum("balance_remaining"))["total"] or Decimal("0.00")
+
+        net_group_balance = max(
+            Decimal("0.00"),
+            (total_savings + total_penalties + loans_repaid) - loans_disbursed
+        )
+
         stats = {
             "member_count": memberships.count(),
-            "total_savings": contributions.filter(status__in=["PAID", "LATE"]).aggregate(
-                total=Sum("amount")
-            )["total"] or Decimal("0.00"),
-            "total_penalties": penalties.aggregate(total=Sum("amount"))["total"] or Decimal("0.00"),
+            "total_savings": total_savings,
+            "total_penalties": total_penalties,
+            "total_loans_disbursed": loans_disbursed,
+            "total_loans_repaid": loans_repaid,
+            "active_loans_balance": active_loans_balance,
+            "group_balance": net_group_balance,
         }
 
         return Response({

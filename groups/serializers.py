@@ -5,6 +5,8 @@ from .models import Group, Membership
 
 class GroupSerializer(serializers.ModelSerializer):
     total_contributions = serializers.SerializerMethodField()
+    group_balance = serializers.SerializerMethodField()
+    member_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Group
@@ -19,6 +21,8 @@ class GroupSerializer(serializers.ModelSerializer):
             "min_saving_amount",
             "created_at",
             "total_contributions",
+            "group_balance",
+            "member_count",
         )
 
     def get_total_contributions(self, obj):
@@ -31,6 +35,37 @@ class GroupSerializer(serializers.ModelSerializer):
             )["total"]
             or 0.0
         )
+
+    def get_member_count(self, obj):
+        return obj.memberships.count()
+
+    def get_group_balance(self, obj):
+        from decimal import Decimal
+        from finance.models import Loan, LoanRepayment, Penalty
+        total_savings = Decimal(str(self.get_total_contributions(obj)))
+        total_penalties = (
+            Penalty.objects.filter(
+                contribution__group=obj,
+                is_archived=False,
+            ).aggregate(total=Sum("amount"))["total"]
+            or Decimal("0.00")
+        )
+        loans_disbursed = (
+            Loan.objects.filter(
+                group=obj,
+                status__in=["DISBURSED", "REPAID"],
+                is_archived=False,
+            ).aggregate(total=Sum("amount"))["total"]
+            or Decimal("0.00")
+        )
+        loans_repaid = (
+            LoanRepayment.objects.filter(
+                loan__group=obj,
+                status="VERIFIED",
+            ).aggregate(total=Sum("amount"))["total"]
+            or Decimal("0.00")
+        )
+        return float(max(Decimal("0.00"), (total_savings + total_penalties + loans_repaid) - loans_disbursed))
 
 
 class MembershipSerializer(serializers.ModelSerializer):
