@@ -494,7 +494,10 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
 # ====================================================
 class AuditLogSerializer(serializers.ModelSerializer):
     actor_email = serializers.EmailField(source="actor.email", read_only=True)
+    actor_name = serializers.SerializerMethodField()
+    actor_role = serializers.CharField(source="actor.role", read_only=True, default="SYSTEM")
     target_email = serializers.EmailField(source="target_user.email", read_only=True)
+    target_name = serializers.SerializerMethodField()
 
     class Meta:
         model = AuditLog
@@ -502,9 +505,24 @@ class AuditLogSerializer(serializers.ModelSerializer):
             "id",
             "actor",
             "actor_email",
+            "actor_name",
+            "actor_role",
             "target_user",
             "target_email",
+            "target_name",
             "action",
             "timestamp",
             "notes",
         )
+
+    def get_actor_name(self, obj):
+        if not obj.actor:
+            return "SYSTEM"
+        full = f"{obj.actor.first_name} {obj.actor.last_name}".strip()
+        return full or obj.actor.email
+
+    def get_target_name(self, obj):
+        if not obj.target_user:
+            return "Deleted User"
+        full = f"{obj.target_user.first_name} {obj.target_user.last_name}".strip()
+        return full or obj.target_user.email

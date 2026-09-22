@@ -537,6 +537,99 @@ class AdminMemberFinancialOversightTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
+    def test_member_can_view_own_financial_profile(self):
+        refresh = RefreshToken.for_user(self.member_one)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+        response = self.client.get(
+            reverse("member-financial-profile", args=[self.member_one.id])
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["member"]["id"], self.member_one.id)
+        self.assertEqual(float(response.data["total_savings"]), 1000.0)
+        self.assertEqual(float(response.data["total_penalties"]), 120.0)
+
+    def test_member_superuser_can_view_any_member_financial_profile(self):
+        superuser = User.objects.create_user(
+            email="superuser-member@test.com",
+            password="SuperPass123!",
+            role="MEMBER",
+            is_superuser=True,
+            is_active=True,
+            is_approved=True,
+        )
+        refresh = RefreshToken.for_user(superuser)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+        response = self.client.get(
+            reverse("member-financial-profile", args=[self.member_one.id])
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["member"]["id"], self.member_one.id)
+
+    def test_treasurer_membership_role_can_view_group_member_profile(self):
+        treasurer = User.objects.create_user(
+            email="group-treasurer@test.com",
+            password="TreasPass123!",
+            role="TREASURER",
+            is_active=True,
+            is_approved=True,
+        )
+        Membership.objects.create(user=treasurer, group=self.group, role="TREASURER")
+
+        refresh = RefreshToken.for_user(treasurer)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+        response = self.client.get(
+            reverse("member-financial-profile", args=[self.member_one.id])
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["member"]["id"], self.member_one.id)
+
+    def test_financial_secretary_can_view_group_member_profile(self):
+        fin_sec = User.objects.create_user(
+            email="finsec@test.com",
+            password="FinSecPass123!",
+            role="FINANCIAL_SECRETARY",
+            is_active=True,
+            is_approved=True,
+        )
+        Membership.objects.create(user=fin_sec, group=self.group, role="FINANCIAL_SECRETARY")
+
+        refresh = RefreshToken.for_user(fin_sec)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+        response = self.client.get(
+            reverse("member-financial-profile", args=[self.member_one.id])
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["member"]["id"], self.member_one.id)
+
+    def test_financial_profile_nonexistent_member_returns_404(self):
+        response = self.client.get(
+            reverse("member-financial-profile", args=[999999])
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_savings_history_invalid_parameters_return_400(self):
+        # Invalid date order: start_date > end_date
+        response = self.client.get(
+            reverse("member-savings-history", args=[self.member_one.id]),
+            {"start_date": "2026-12-31", "end_date": "2026-01-01"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+        # Invalid type
+        response_invalid_type = self.client.get(
+            reverse("member-savings-history", args=[self.member_one.id]),
+            {"type": "nonexistent_type"},
+        )
+        self.assertEqual(response_invalid_type.status_code, status.HTTP_400_BAD_REQUEST)
+
     def test_admin_loan_dashboard_returns_scoped_metrics(self):
         loan = Loan.objects.create(
             user=self.member_one,

@@ -1661,10 +1661,17 @@ def _can_view_member_finance(user, member):
     if user.id == member.id:
         return True
     if user.role == "TREASURER":
-        return Membership.objects.filter(
-            user=member,
-            group__treasurer=user,
-        ).exists()
+        return (
+            Membership.objects.filter(
+                user=member,
+                group__treasurer=user,
+            ).exists()
+            or Membership.objects.filter(
+                user=member,
+                group__memberships__user=user,
+                group__memberships__role="TREASURER",
+            ).exists()
+        )
     if user.role == "FINANCIAL_SECRETARY":
         return Membership.objects.filter(
             user=member,
@@ -1815,7 +1822,10 @@ class AdminGroupSummaryView(APIView):
 def _has_group_report_access(user, group):
     if user.is_superuser or user.role == "ADMIN":
         return True
-    if user.role == "TREASURER" and group.treasurer_id == user.id:
+    if user.role == "TREASURER" and (
+        group.treasurer_id == user.id
+        or group.memberships.filter(user=user, role="TREASURER").exists()
+    ):
         return True
     return group.memberships.filter(user=user, role="FINANCIAL_SECRETARY").exists()
 
