@@ -78,3 +78,64 @@ class AnalyticsTests(TestCase):
         
         self.assertEqual(data['group_metrics']['total_capital'], Decimal("10000.00"))
         self.assertEqual(data['group_metrics']['active_members'], 1)  # Member memberships only
+
+
+class MemberFinancialProfileAccessTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.admin = User.objects.create_superuser(
+            email="profile-admin@test.com",
+            password="password",
+            role="ADMIN",
+        )
+        self.member = User.objects.create_user(
+            email="profile-member@test.com",
+            password="password",
+            role="MEMBER",
+            is_approved=True,
+        )
+        self.other_member = User.objects.create_user(
+            email="other-member@test.com",
+            password="password",
+            role="MEMBER",
+            is_approved=True,
+        )
+        self.group = Group.objects.create(name="Profile Group", treasurer=self.admin)
+        Membership.objects.create(user=self.member, group=self.group, role="MEMBER")
+        Membership.objects.create(user=self.other_member, group=self.group, role="MEMBER")
+
+    def test_member_can_fetch_own_financial_profile_and_history(self):
+        Contribution.objects.create(
+            user=self.member,
+            group=self.group,
+            amount=Decimal("700.00"),
+            due_date=date.today(),
+            status="PAID",
+            paid_date=date.today(),
+        )
+        self.client.force_authenticate(user=self.member)
+
+        profile_response = self.client.get(
+            f"/api/finance/members/{self.member.id}/financial-profile/"
+        )
+        self.assertEqual(profile_response.status_code, 200)
+        self.assertEqual(profile_response.data["member"]["id"], self.member.id)
+        self.assertEqual(float(profile_response.data["total_savings"]), 700.0)
+        self.assertIn("net_position", profile_response.data)
+
+        history_response = self.client.get(
+            f"/api/finance/members/{self.member.id}/savings-history/"
+        )
+        self.assertEqual(history_response.status_code, 200)
+        self.assertIsInstance(history_response.data, list)
+        self.assertGreaterEqual(len(history_response.data), 1)
+
+    def test_unauthorized_member_cannot_fetch_another_members_profile(self):
+        self.client.force_authenticate(user=self.other_member)
+
+        response = self.client.get(
+            f"/api/finance/members/{self.member.id}/financial-profile/"
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("access", str(response.data).lower())
+

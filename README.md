@@ -1,110 +1,80 @@
 ﻿# SeedVest Backend
 
-SeedVest is a micro-investment and savings management platform. This backend provides API services for authentication, governance, finance, notifications, and payments.
+The backend is the API layer for the SeedVest platform and is built with Django and Django REST Framework. It handles member accounts, group governance, contributions, loans, savings tracking, reporting, notifications, and M-Pesa payment callbacks.
 
-## Core Features
+## Core modules
 
-- Secure authentication with JWT and refresh-token blacklisting.
-- Finance management for contributions, penalties, savings targets, and reporting.
-- M-Pesa integration for payment initiation and callback handling.
-- Governance workflows for member approval, role management, and auditing.
-- Email workflows for activation, admin invites, password reset, and notifications.
+- `accounts/` — authentication, approval, user lifecycle, roles, and access control
+- `groups/` — group membership, treasury access, and group-level permission checks
+- `finance/` — contributions, penalties, investments, analytics, member financial profile, statements, and report generation
+- `payments/` — M-Pesa Daraja integration and callback handling
+- `notifications/` — in-app and push notification logic
+- `seedvest/` — project configuration, global settings, and URL routing
 
-## Tech Stack
+## Role model
 
-- Framework: Django, Django REST Framework
-- Database: PostgreSQL (configured via `.env`)
-- Authentication: SimpleJWT (with token blacklisting)
-- Notifications: in-app records, Firebase Cloud Messaging, and Django email delivery
+The backend supports roles such as:
 
-## Getting Started
+- `ADMIN`
+- `TREASURER`
+- `MEMBER`
+- `FINANCIAL_SECRETARY`
 
-1. Clone the repository.
-2. Create and activate a virtual environment:
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate  # Windows: .venv\Scripts\activate
-   ```
-3. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-4. Create `.env` in `seedvest_backend/`:
-   ```env
-   DEBUG=True
-   SECRET_KEY=your-secret-key
+The `FINANCIAL_SECRETARY` role is designed for read-only financial oversight and report access for permitted groups and members.
 
-   DB_NAME=seedvest_db
-   DB_USER=seedvest_admin
-   DB_PASSWORD=your-db-password
-   DB_HOST=localhost
-   DB_PORT=5432
+## Financial profile module
 
-   MPESA_CONSUMER_KEY=your-key
-   MPESA_CONSUMER_SECRET=your-secret
-   MPESA_SHORTCODE=your-shortcode
-   MPESA_PASSKEY=your-passkey
-   MPESA_CALLBACK_URL=https://your-domain/api/payments/mpesa/callback/
+The finance module includes member-level profile and history endpoints used by the Flutter mobile app:
 
-   EMAIL_PROVIDER=smtp
-   EMAIL_HOST=smtp.gmail.com
-   EMAIL_PORT=587
-   EMAIL_USE_TLS=True
-   EMAIL_HOST_USER=your-email@example.com
-   EMAIL_HOST_PASSWORD=your-email-app-password
-   DEFAULT_FROM_EMAIL=SeedVest <your-email@example.com>
+- `GET /finance/members/<member_id>/financial-profile/`
+- `GET /finance/members/<member_id>/savings-history/`
+- `GET /finance/reports/member-statement-pdf/`
 
-   RESEND_API_KEY=
-   RESEND_FROM_EMAIL=
+These endpoints calculate total savings, active loans, overdue balances, investments, penalties, and net position, then return the data in a contract consumable by the mobile client.
 
-   FIREBASE_PROJECT_ID=
-   FIREBASE_CLIENT_EMAIL=
-   FIREBASE_PRIVATE_KEY=
+## Getting started
 
-   FRONTEND_URL=seedvest://
-   ```
-5. Run migrations:
-   ```bash
-   python manage.py migrate
-   ```
-6. Create an admin user:
-   ```bash
-   python manage.py createsuperuser
-   ```
-   Superusers now receive a membership number automatically on creation.
-7. Start the dev server:
-   ```bash
-   python manage.py runserver
-   ```
+### Prerequisites
 
-## Admin Invite and Password Setup Flow
+- Python 3.11+
+- Virtual environment support (`venv`)
 
-- Admin invites a member with `POST /api/accounts/users/admin_register/`.
-- Invited users are created as approved but inactive.
-- The system sends a setup email with a secure link to:
-  - `GET /reset-password/<uid>/<token>/`
-- The user sets a password on that web page; the account activates automatically after success.
-- If the setup link expires, admin can resend a new one:
-  - `POST /api/accounts/users/{id}/resend-setup-link/`
+### Setup
 
-Note: token expiry is controlled by `PASSWORD_RESET_TIMEOUT` in `seedvest/settings.py` (currently `1800` seconds).
+```bash
+cd seedvest_backend
+python -m venv .venv
+source .venv/bin/activate     # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+python manage.py migrate
+python manage.py runserver
+```
+
+Create a `.env` file with your project settings, including database credentials, email config, and M-Pesa credentials.
+
+## Admin and setup flow
+
+- Admin users may invite and approve members.
+- Password reset and member activation links are delivered through the account workflow.
+- Token expiry and user lifecycle behavior are enforced in project settings and account views.
 
 ## Testing
 
-Run all tests:
+Run the full suite:
+
 ```bash
 python manage.py test
 ```
 
-Run tests for one app:
+Run a specific app:
+
 ```bash
 python manage.py test <app_name>
 ```
 
-## Security Notes
+## Security notes
 
-- Access tokens are short-lived.
-- Refresh tokens are rotated and can be blacklisted on logout.
-- Role-based permissions are enforced across governance and finance endpoints.
-- Password reset endpoints avoid leaking account existence to clients.
-- Notification delivery failures are logged and never reverse successful account or financial operations.
+- JWT access tokens and refresh flows are enforced centrally.
+- Refresh tokens may be invalidated on logout and rotation events.
+- Sensitive operations remain permission-scoped to the correct role and member access boundaries.
+- Reporting and member finance endpoints are protected by approval and access checks before returning sensitive financial data.
