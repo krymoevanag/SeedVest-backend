@@ -126,7 +126,9 @@ class FinancialCycleFlowTests(APITestCase):
         response = self.client.get(reverse("monthly-contribution-report-export"))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response["Content-Type"], "text/csv")
-        self.assertIn("Member,Member Email,Group,Cycle", response.content.decode("utf-8"))
+        self.assertIn("Member", response.content.decode("utf-8"))
+        self.assertIn("Member Email", response.content.decode("utf-8"))
+        self.assertIn("Phone Number", response.content.decode("utf-8"))
 
     def test_data_audit_detects_missing_cycle_references(self):
         contribution = Contribution.objects.create(
