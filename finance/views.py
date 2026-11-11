@@ -1231,7 +1231,9 @@ class MonthlyContributionReportViewSet(viewsets.ReadOnlyModelViewSet):
         writer = csv.writer(output)
         writer.writerow(
             [
+                "Membership Number",
                 "Member",
+                "Phone Number",
                 "Member Email",
                 "Group",
                 "Cycle",
@@ -1245,10 +1247,20 @@ class MonthlyContributionReportViewSet(viewsets.ReadOnlyModelViewSet):
         )
 
         for row in records:
+            member_name = f"{row.user.first_name} {row.user.last_name}".strip()
+            if not member_name:
+                member_name = (
+                    row.user.membership_number
+                    or row.user.email
+                    or row.user.phone_number
+                    or f"User #{row.user.id}"
+                )
             writer.writerow(
                 [
-                    f"{row.user.first_name} {row.user.last_name}".strip() or row.user.email,
-                    row.user.email,
+                    row.user.membership_number or "",
+                    member_name,
+                    row.user.phone_number or "",
+                    row.user.email or "",
                     row.group.name,
                     row.financial_cycle.cycle_name,
                     row.month.isoformat(),

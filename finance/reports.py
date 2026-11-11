@@ -4,7 +4,7 @@ from decimal import Decimal
 from io import BytesIO
 from xml.sax.saxutils import escape
 
-from django.db.models import Sum
+from django.db.models import Q, Sum
 
 from .models import Contribution, Loan, MonthlyContributionRecord, Penalty
 
@@ -14,7 +14,8 @@ def _decimal(value):
 
 
 def _member_name(user):
-    return f"{user.first_name} {user.last_name}".strip() or user.email
+    name = f"{user.first_name} {user.last_name}".strip()
+    return name or user.membership_number or user.email or user.phone_number or f"User #{user.id}"
 
 
 def build_financial_cycle_workbook(cycle):
@@ -38,10 +39,14 @@ def build_financial_cycle_workbook(cycle):
         .select_related("user")
         .order_by("created_at")
     )
-    penalties = Penalty.objects.filter(
-        contribution__financial_cycle=cycle,
-        is_archived=False,
-    ).select_related("user", "contribution")
+    penalties = (
+        Penalty.objects.filter(
+            Q(contribution__financial_cycle=cycle)
+            | Q(contribution__isnull=True, created_at__date__gte=cycle.start_date, created_at__date__lte=cycle.end_date),
+            is_archived=False,
+        )
+        .select_related("user", "contribution")
+    )
 
     paid_total = _decimal(
         contributions.filter(status__in=["PAID", "LATE"]).aggregate(total=Sum("amount"))["total"]
@@ -186,12 +191,15 @@ def build_member_statement_pdf(member, group, cycle=None):
     ).order_by("due_date", "created_at")
     loans = Loan.objects.filter(user=member, group=group, is_archived=False).order_by("created_at")
     penalties = Penalty.objects.filter(user=member, is_archived=False).filter(
-        contribution__group=group
+        Q(contribution__group=group) | Q(contribution__isnull=True)
     )
     if cycle is not None:
         contributions = contributions.filter(financial_cycle=cycle)
         loans = loans.filter(financial_cycle=cycle)
-        penalties = penalties.filter(contribution__financial_cycle=cycle)
+        penalties = penalties.filter(
+            Q(contribution__financial_cycle=cycle)
+            | Q(contribution__isnull=True, created_at__date__gte=cycle.start_date, created_at__date__lte=cycle.end_date)
+        )
 
     saved_total = _decimal(
         contributions.filter(status__in=["PAID", "LATE"]).aggregate(total=Sum("amount"))["total"]
