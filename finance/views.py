@@ -220,38 +220,6 @@ class ContributionViewSet(viewsets.ModelViewSet):
             if contribution.financial_cycle:
                 contribution.financial_cycle.refresh_totals()
 
-    def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
-
-    def perform_update(self, serializer):
-        instance = self.get_object()
-        old_amount = str(instance.amount)
-        old_status = str(instance.status)
-        old_date = str(instance.due_date)
-        
-        contribution = serializer.save()
-        
-        # Audit Logging
-        changes = []
-        if old_amount != str(contribution.amount):
-            changes.append(f"amount: {old_amount} -> {contribution.amount}")
-        if old_status != str(contribution.status):
-            changes.append(f"status: {old_status} -> {contribution.status}")
-        if old_date != str(contribution.due_date):
-            changes.append(f"due_date: {old_date} -> {contribution.due_date}")
-            
-        if changes:
-            AuditLog.objects.create(
-                actor=self.request.user,
-                target_user=contribution.user,
-                action="FINANCE_CHANGE",
-                notes=f"Updated contribution #{contribution.id}: {', '.join(changes)}"
-            )
-            
-            # Recalculate monthly records and cycle totals
-            FinancialCycleService.sync_monthly_record_from_contribution(contribution)
-            if contribution.financial_cycle:
-                contribution.financial_cycle.refresh_totals()
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -381,6 +349,27 @@ class ContributionViewSet(viewsets.ModelViewSet):
 
         return Response({"status": "Contribution rejected"})
 
+    def perform_update(self, serializer):
+        instance = self.get_object()
+        old_amount = str(instance.amount)
+        old_reason = str(instance.reason)
+
+        penalty = serializer.save()
+
+        changes = []
+        if old_amount != str(penalty.amount):
+            changes.append(f"amount: {old_amount} -> {penalty.amount}")
+        if old_reason != str(penalty.reason):
+            changes.append(f"reason: '{old_reason}' -> '{penalty.reason}'")
+
+        if changes:
+            AuditLog.objects.create(
+                actor=self.request.user,
+                target_user=penalty.user,
+                action="FINANCE_CHANGE",
+                notes=f"Updated penalty #{penalty.id}: {', '.join(changes)}"
+            )
+
     def destroy(self, request, *args, **kwargs):
         user = request.user
         contribution = self.get_object()
@@ -477,6 +466,27 @@ class PenaltyViewSet(viewsets.ModelViewSet):
             return base_queryset.filter(user=user, is_archived=False)
 
         return base_queryset.filter(is_archived=False)
+
+    def perform_update(self, serializer):
+        instance = self.get_object()
+        old_amount = str(instance.amount)
+        old_reason = str(instance.reason)
+
+        penalty = serializer.save()
+
+        changes = []
+        if old_amount != str(penalty.amount):
+            changes.append(f"amount: {old_amount} -> {penalty.amount}")
+        if old_reason != str(penalty.reason):
+            changes.append(f"reason: '{old_reason}' -> '{penalty.reason}'")
+
+        if changes:
+            AuditLog.objects.create(
+                actor=self.request.user,
+                target_user=penalty.user,
+                action="FINANCE_CHANGE",
+                notes=f"Updated penalty #{penalty.id}: {', '.join(changes)}"
+            )
 
     def destroy(self, request, *args, **kwargs):
         user = request.user
@@ -797,6 +807,27 @@ class InvestmentViewSet(viewsets.ModelViewSet):
     def partial_update(self, request, *args, **kwargs):
         kwargs["partial"] = True
         return self.update(request, *args, **kwargs)
+
+    def perform_update(self, serializer):
+        instance = self.get_object()
+        old_amount = str(instance.amount)
+        old_reason = str(instance.reason)
+
+        penalty = serializer.save()
+
+        changes = []
+        if old_amount != str(penalty.amount):
+            changes.append(f"amount: {old_amount} -> {penalty.amount}")
+        if old_reason != str(penalty.reason):
+            changes.append(f"reason: '{old_reason}' -> '{penalty.reason}'")
+
+        if changes:
+            AuditLog.objects.create(
+                actor=self.request.user,
+                target_user=penalty.user,
+                action="FINANCE_CHANGE",
+                notes=f"Updated penalty #{penalty.id}: {', '.join(changes)}"
+            )
 
     def destroy(self, request, *args, **kwargs):
         investment = self.get_object()
@@ -1504,17 +1535,30 @@ class AdminMemberListView(ListAPIView):
         scoped_contributions = Contribution.objects.filter(contribution_filter)
 
         if cycle_id:
-            scoped_penalties_filter = Q(
-                user_id=OuterRef("user_id"),
-                contribution__group_id=OuterRef("group_id"),
-                contribution__financial_cycle_id=cycle_id,
+            scoped_penalties_filter = (
+                Q(
+                    user_id=OuterRef("user_id"),
+                    contribution__group_id=OuterRef("group_id"),
+                    contribution__financial_cycle_id=cycle_id,
+                )
+                | Q(
+                    user_id=OuterRef("user_id"),
+                    contribution__isnull=True,
+                )
             )
         else:
-            scoped_penalties_filter = Q(
-                user_id=OuterRef("user_id"),
-                is_archived=False,
-                contribution__group_id=OuterRef("group_id"),
-                contribution__is_archived=False,
+            scoped_penalties_filter = (
+                Q(
+                    user_id=OuterRef("user_id"),
+                    is_archived=False,
+                    contribution__group_id=OuterRef("group_id"),
+                    contribution__is_archived=False,
+                )
+                | Q(
+                    user_id=OuterRef("user_id"),
+                    is_archived=False,
+                    contribution__isnull=True,
+                )
             )
         scoped_penalties = Penalty.objects.filter(scoped_penalties_filter)
 

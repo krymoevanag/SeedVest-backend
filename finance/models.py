@@ -937,7 +937,7 @@ class Loan(models.Model):
         ordering = ["-created_at"]
 
     def __str__(self):
-        return f"Loan #{self.id}: {self.user.email} - KES {self.amount} ({self.status})"
+        return f"Loan #{self.id}: {self.user} - KES {self.amount} ({self.status})"
 
     def save(self, *args, **kwargs):
         if not self.total_payable:
@@ -1022,7 +1022,7 @@ class LoanGuarantor(models.Model):
         ]
 
     def __str__(self):
-        return f"Guarantor {self.guarantor_user.email} for Loan #{self.loan.id} ({self.status})"
+        return f"Guarantor {self.guarantor_user} for Loan #{self.loan.id} ({self.status})"
 
 
 class LoanRepayment(models.Model):

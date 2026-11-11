@@ -24,12 +24,14 @@ class ContributionAdmin(admin.ModelAdmin):
         "penalty",
     )
     list_filter = ("status", "is_manual_entry", "group")
-    search_fields = ("user__username", "user__email")
+    search_fields = ("user__first_name", "user__last_name", "user__email", "user__membership_number", "user__phone_number")
 
 
 @admin.register(Penalty)
 class PenaltyAdmin(admin.ModelAdmin):
-    list_display = ("contribution", "amount", "reason", "created_at")
+    list_display = ("user", "contribution", "amount", "reason", "is_archived", "created_at")
+    list_filter = ("is_archived",)
+    search_fields = ("user__first_name", "user__last_name", "user__email", "user__membership_number", "reason")
 
 
 @admin.register(FinancialCycle)

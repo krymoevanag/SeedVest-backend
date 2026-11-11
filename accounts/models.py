@@ -124,7 +124,15 @@ class User(AbstractUser):
         return f"MBR-{year}-{new_number:04d}"
 
     def __str__(self):
-        return self.email
+        full_name = f"{self.first_name} {self.last_name}".strip()
+        identifier = self.email or self.membership_number or self.phone_number
+        if full_name and identifier:
+            return f"{full_name} ({identifier})"
+        if full_name:
+            return full_name
+        if identifier:
+            return str(identifier)
+        return f"User #{self.id}"
 
 
 class AuditLog(models.Model):
@@ -166,6 +174,6 @@ class AuditLog(models.Model):
         verbose_name_plural = "Audit Logs"
 
     def __str__(self):
-        actor_name = self.actor.email if self.actor else "SYSTEM"
-        target_name = self.target_user.email if self.target_user else "DELETED"
+        actor_name = str(self.actor) if self.actor else "SYSTEM"
+        target_name = str(self.target_user) if self.target_user else "DELETED"
         return f"{actor_name} -> {self.action} -> {target_name}"
